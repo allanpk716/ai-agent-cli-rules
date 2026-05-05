@@ -27,5 +27,8 @@ target/
 vendor/
 *.log
 coverage/
+.coverage
 .cache/
 tmp/
+*.egg-info/
+*.exe

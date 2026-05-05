@@ -173,34 +173,63 @@ error_code 应按关注点分离原则分为三层，每层使用不同命名前
 
 ## 第三章 全局通用保留命令空间 (Reserved Meta-Commands)
 
-**设计契约：** 为了让 Agent 能够"一套逻辑通吃所有工具"，凡遵守此规范的 CLI，必须将 `agent` 注册为一级保留命令，并强行实现以下 6 大类、16 个"元管理动作"。**业务命令严禁占用该空间。**
+**设计契约：** 为了让 Agent 能够"一套逻辑通吃所有工具"，凡遵守此规范的 CLI，必须将 `agent` 注册为一级保留命令，并实现以下两级分层命令体系：**核心命令（Required）**是 Agent 正常运转的最低保障，所有合规工具必须实现；**可选命令（Optional）**按工具架构与业务场景按需提供。**业务命令严禁占用该空间。**
 
-### 3.1 发现与语义嗅探模块 (Discovery)
-* `[CLI] agent info`：输出工具当前版本、最后更新日期、文档指引。
-* `[CLI] agent schema`：输出全量 JSON Schema，包含每一个业务命令的必填项、类型、描述，以及是否允许盲冲的 `"is_idempotent": true/false` 标识。
+> **分级原则：** Required 命令覆盖 Agent 的"感知-诊断-配置"核心闭环——不了解工具能做什么（schema）、出了什么错（errors）、当前配置是什么（config）、健康状态如何（doctor）、崩溃现场是什么（last-crash）、缓存是否干净（cache clean），Agent 就无法可靠地编排任何业务流程。Optional 命令解决的是"锦上添花"的运维场景（升级、认证、守护进程管理、功能请求、链路追踪），它们的缺失不影响核心业务链路。
+
+### 3.1 核心命令 (Required)
+
+以下 7 个命令是合规工具的**强制实现项**。Agent 可以在任何合规工具上无条件调用这些命令。
+
+#### 3.1.1 语义自描述
+
+* `[CLI] agent schema`：输出全量 JSON Schema，包含每一个业务命令的必填项、类型、描述，以及是否允许盲冲的 `"is_idempotent": true/false` 标识。**同时包含工具版本、最后更新日期、文档指引等元信息**（原 `agent info` 功能已并入此命令，Agent 无需单独调用 info 即可获取工具身份与能力全景）。
+
+> 💡 实践注记：将 `agent info` 并入 `agent schema` 的理由是消除冗余调用——Agent 在每次新会话中首先调用 `agent schema` 获取命令边界，此时顺带获得版本和文档信息是最自然的交互模式。单独的 `agent info` 增加了一次进程启动开销却未提供增量价值。
+
 * `[CLI] agent errors`：输出工具独有的自定义排错字典列表（`error_code` 到排障指引的映射）。
 
-### 3.2 状态监测与生命周期模块 (Health)
-* `[CLI] agent doctor`：执行系统权限、网络、守护进程健康度体检，返回确定的 Pass/Fail 状态。
-* `[CLI] agent update check`：只读不写，获取是否有可用的二进制远端新版本，并携带变化说明（Breaking Changes）。
-* `[CLI] agent update apply`：触发本程序的原地版本替换与升级校验。
+#### 3.1.2 配置管理
 
-### 3.3 凭据与配置接管模块 (Auth & Config)
-* `[CLI] agent auth status`：检查凭证有效性与配额。绝不能输出明文 Token，仅返回 boolean 和过期时间。
 * `[CLI] agent config list --redact`：盘点所有挂载的配置设定（强制脱敏）。
 * `[CLI] agent config set <key> <value>`：Agent 运行时热修改特定环境数值（如延长超时期）。
 
 > 💡 实践注记：wr 的 `config set` 使用路径白名单（`ValidConfigPaths()`）防止拼写错误静默创建无效键。建议规范要求所有 `config set` 实现路径校验，而非盲目写入。
 
-### 3.4 痕迹清理与系统资源模块 (Resource)
-* `[CLI] agent cache clean`：清理上一次任务遗留的缓存脏文件或长期累积的 tmp 文件。
-* `[CLI] agent daemon status|start|stop`：（如果存在守护进程）纯无头级别的进程启停开关。
+#### 3.1.3 健康诊断
 
-### 3.5 灾难取证模块 (Diagnostics)
+* `[CLI] agent doctor`：执行系统权限、网络、守护进程健康度体检，返回确定的 Pass/Fail 状态。
 * `[CLI] agent debug last-crash`：致命退出后（Exit Code 1），提取包含 Call Stack（死机堆栈）与调用参数字典的全真上下文。
+
+#### 3.1.4 资源维护
+
+* `[CLI] agent cache clean`：清理上一次任务遗留的缓存脏文件或长期累积的 tmp 文件。
+
+### 3.2 可选命令 (Optional)
+
+以下 10 个命令按工具架构与业务场景按需实现。Agent 在调用前应通过 `agent schema` 检查该命令是否存在。
+
+#### 3.2.1 版本升级
+
+* `[CLI] agent update check`：只读不写，获取是否有可用的二进制远端新版本，并携带变化说明（Breaking Changes）。
+* `[CLI] agent update apply`：触发本程序的原地版本替换与升级校验。
+
+#### 3.2.2 凭据管理
+
+* `[CLI] agent auth status`：检查凭证有效性与配额。绝不能输出明文 Token，仅返回 boolean 和过期时间。
+
+#### 3.2.3 守护进程管理
+
+* `[CLI] agent daemon status`：查询守护进程运行状态（如果架构使用 daemon 模式）。
+* `[CLI] agent daemon start`：启动守护进程（如果架构使用 daemon 模式）。
+* `[CLI] agent daemon stop`：停止守护进程（如果架构使用 daemon 模式）。
+
+#### 3.2.4 环境取证
+
 * `[CLI] agent debug env --redact`：提取 OS 硬件环境、核心依赖情况组成的 Issue 快照。
 
-### 3.6 反馈溯源模块 (Feedback)
+#### 3.2.5 反馈溯源
+
 * `[CLI] agent feature record --name <n> --desc <d>`：当业务逻辑受限（抛出 NotImplemented 时），记录缺失的能力诉求至沙箱。
 * `[CLI] agent feature list`：统一导出过往累计的需求清单。
 * `[CLI] agent metrics trace --id <job_id>`：按单一 Trace ID 审计该任务消耗的时间、API 成本统计。
@@ -510,7 +539,7 @@ Agent-Native CLI 工具管理的数据具有完整的生命周期：创建、读
 > 2. 对于 `is_idempotent: false` 及高危数据操作，强制先附带 `--dry-run`；对于资源密集型操作前先通过 `agent doctor` 体检。
 > 3. 若目标由于网络/环境抛出可修复错误代码 (例如 Exit 3 或 4)，根据 `agent errors` 诊断建议重试或修正。**Exit 3 通常表示 daemon 未启动——先执行 `agent daemon start`。**
 > 4. 若目标由于底层缺陷抛出不可逆代码 (Exit 1)，即刻调用 `agent debug last-crash` 加 `agent debug env --redact` 调取线索，并停止当前流程，输出完整 Bug 报告。
-> 5. 系统能力无法直接完成推演的动作，不要虚构调用，立即使用 `agent feature record` 归档此功能痛点请求。
+> 5. 系统能力无法直接完成推演的动作，不要虚构调用，立即使用 `agent feature record`（Optional 命令，通过 `agent schema` 确认可用性）归档此功能痛点请求。
 > 6. 导出操作优先使用过滤参数（`--type`、`--from`、`--to`、`--query`）缩小数据范围，避免消耗过多上下文窗口。
 > 7. 操作完成后检查 JSONL 响应中的 `type` 字段——`result` 表示成功，`error` 表示失败，忽略其他字段。**不要假设字段是否存在——遵循 2.1.2 的互斥规则。**
 

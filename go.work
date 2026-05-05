@@ -1,0 +1,6 @@
+go 1.24
+
+use (
+	./sdks/go
+	./examples/go/helloworld
+)
