@@ -208,7 +208,7 @@ func (s *Server) panicRecoveryMiddleware(next http.Handler) http.Handler {
 
 #### 理论方案
 
-遵循 XDG 标准，创建专属沙箱，内部严格分区：`locks/`、`crash_dumps/`、`cache/`。业务代码禁止在 pwd 乱写隐藏文件。
+遵循单一目录模式，创建专属沙箱，内部严格分区：`locks/`、`crash_dumps/`、`cache/`。业务代码禁止在 pwd 乱写隐藏文件。所有数据统一放在 `~/.app-name/` 下，不使用 XDG 多路径分离。
 
 #### wr 的落地实现
 
@@ -269,7 +269,7 @@ log.SetOutput(logFile) // 所有 log.Printf 输出重定向到 daemon.log
 └── cache/               # 资源缓存
 ```
 
-> **wr 实践注记**：wr 将沙箱放在 `~/.work-report/` 而非严格的 XDG 路径 `~/.local/state/`，因为该目录同时承载配置文件和数据文件，分离反而增加复杂度。`crash_dumps/` 目录目前预留但尚未写入——wr 通过 daemon.log + JSONL 错误信封提供了足够的诊断信息。真正的 `.last-crash.json` 机制（见 Pillar 4）需要在 daemon 层实现。
+> **wr 实践注记**：wr 将沙箱放在 `~/.work-report/`（单一目录模式），配置文件和数据文件统一管理。相比 XDG 多路径分离（`~/.config/` + `~/.local/share/` + `~/.local/state/`），单目录模式显著降低了路径管理复杂度、迁移成本和用户认知负担。web-clip-helper 最初使用 XDG 多路径模式，实际维护中发现路径管理代码膨胀、调试排查困难，V2.3 规范已统一推荐单目录模式。`crash_dumps/` 目录目前预留但尚未写入——wr 通过 daemon.log + JSONL 错误信封提供了足够的诊断信息。真正的 `.last-crash.json` 机制（见 Pillar 4）需要在 daemon 层实现。
 
 ---
 

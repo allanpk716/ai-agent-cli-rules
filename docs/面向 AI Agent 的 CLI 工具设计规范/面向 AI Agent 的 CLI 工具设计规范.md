@@ -2,9 +2,11 @@
 
 # 🤖 面向 AI Agent 的 CLI 工具设计规范 (Agent-Native CLI Spec)
 
-**版本:** V2.2 (实践修订版)
+**版本:** V2.3 (单目录路径模式修订版)
 **目标:** 彻底消除人类终端交互带来的解释歧义与"大模型幻觉"，构建 **100% 机器可读 (Machine-readable)**、行为确定、具备自我描述与生命周期自治能力的 AI Agent 基础设施生态。
 
+> **V2.3 修订说明：** 基于 wr（Go）和 web-clip-helper（Python）两个项目的实践经验，将路径策略从 XDG 多路径模式统一为**单目录模式**。理由：Agent-Native CLI 工具不是桌面应用，XDG 多路径带来的维护成本（路径管理代码膨胀、调试排查困难、测试隔离复杂、迁移逻辑沉重）远高于其收益。修订涉及：5.5.1（实践注记更新）、5.5.2（跨平台路径适配全面重写）、6.4（数据迁移策略从 XDG 迁移改为单目录内部迁移）。
+>
 > **V2.2 修订说明：** 基于 web-clip-helper（Python + Typer CLI）的 M004–M006 里程碑经验，对 V2.1 进行了补充修订。新增：2.4 静默模式、2.5 幂等响应模式、5.5.2 跨平台路径适配、6.4 数据迁移策略、附录 B 陷阱 8–10。修订以 `> 💡 实践注记：` blockquote 标注。
 
 ---
@@ -329,24 +331,51 @@ CI/CD 流水线发版前，必须运行 Linter 对其随机参数注入检测：
 - 但内部分区（`locks/`、`crash_dumps/`、`cache/`）的名称和存在性由工具强制保证。
 - 工具启动时调用 `EnsureSandboxDirs(baseDir)` 创建所有必需子目录。
 
-> 💡 实践注记：wr 的数据目录默认 `~/.work-report/`，可通过 `config.json` 的 `data_dir` 字段自定义。但沙箱子目录（`locks/`、`crash_dumps/`、`cache/`）的名称硬编码在 `sandbox` 包中，不允许自定义。这种"外柔内刚"的策略平衡了灵活性和可预测性。存量工具迁移时，只需修改 `base_dir`，不用改代码。
+> 💡 实践注记：wr 的数据目录默认 `~/.work-report/`，可通过环境变量或 `config.json` 的 `data_dir` 字段自定义。沙箱子目录（`locks/`、`crash_dumps/`、`cache/`）的名称硬编码在 `sandbox` 包中，不允许自定义。这种"外柔内刚"的策略平衡了灵活性和可预测性。web-clip-helper 最初使用 XDG 多路径模式，后发现维护成本过高，V2.3 规范统一推荐单目录模式。存量工具迁移时，只需修改 `base_dir`，不用改代码。
 
-#### 5.5.2 跨平台路径适配（V2.2 新增）
+#### 5.5.2 跨平台路径适配（V2.2 新增，V2.3 修订）
 
-不同操作系统的标准目录路径差异极大，工具**必须**使用平台感知的库自动解析路径：
+工具**必须使用单一目录（Single Directory）模式**作为沙箱根路径，将配置、数据、缓存、锁文件等统一放在同一个目录下。禁止将不同类型的数据分散到 XDG 标准的多路径（如 config dir + data dir + state dir 分离）。
 
-| 操作系统 | 配置目录 | 数据目录 | 状态/缓存目录 |
-|----------|----------|----------|---------------|
-| Linux | `~/.config/<app>/` | `~/.local/share/<app>/` | `~/.local/state/<app>/` |
-| macOS | `~/Library/Application Support/<app>/` | 同左 | 同左 |
-| Windows | `%APPDATA%\<app>\` | `%LOCALAPPDATA%\<app>\` | `%LOCALAPPDATA%\<app>\` |
+**推荐目录结构：**
+
+```
+<base_dir>/                    ← 默认 ~/.app-name/，可通过环境变量覆盖
+├── config.yaml                ← 配置文件
+├── data/                      ← 业务数据（使用者自定义内部结构）
+├── cache/                     ← SDK 自动管理
+├── locks/                     ← SDK 自动管理
+├── crash_dumps/               ← SDK 自动管理
+└── daemon.log                 ← SDK 自动管理（如果使用 daemon 模式）
+```
+
+**跨平台默认路径规则：**
+
+| 操作系统 | 默认 `base_dir` |
+|----------|----------------|
+| Linux / macOS | `~/.app-name/` |
+| Windows | `%USERPROFILE%\.app-name\` |
 
 **规则：**
-- **禁止硬编码路径**。使用平台感知库（Go: `os.UserConfigDir()`/`os.UserCacheDir()`；Python: `platformdirs`；Node: `env-paths`）自动解析。
-- 如果不使用 XDG 标准路径（如 wr 选择 `~/.work-report/`），必须在文档中明确说明原因，并提供配置覆盖机制。
-- 沙箱内部分区目录（`locks/`、`crash_dumps/`、`cache/`）的名称在不同平台保持一致——跨平台差异只影响 `base_dir`，不影响内部结构。
+- `base_dir` 可通过环境变量 `<APP_NAME>_HOME` 或 `agent config set data_dir` 覆盖。
+- **所有平台默认使用 `~/.app-name/` 模式**，不使用 XDG 多路径分离（`~/.config/` + `~/.local/share/` + `~/.local/state/`）。理由见下。
+- 沙箱内部分区目录（`locks/`、`crash_dumps/`、`cache/`、`data/`）的名称在不同平台保持一致——跨平台差异只影响 `base_dir` 的默认值，不影响内部结构。
+- 工具启动时调用 `EnsureSandboxDirs(baseDir)` 创建所有必需子目录。
 
-> 💡 实践注记：web-clip-helper 使用 Python 的 `platformdirs` 库（封装在 `paths.py` 单一真相源模块中）自动处理三平台差异。`paths.py` 提供统一的 `get_data_dir()`/`get_config_dir()`/`get_cache_dir()` 接口，CLI 层和业务层不直接引用任何路径常量。跨平台测试需在 Windows 和 Linux/macOS 上分别验证路径解析结果——仅靠 `t.TempDir()` 覆盖 `HOME` 无法覆盖 Windows 的 `%APPDATA%` 逻辑。
+**为什么不用 XDG 多路径：**
+
+| 维度 | XDG 多路径 | 单目录模式 |
+|------|-----------|-----------|
+| 用户心智模型 | "配置在 A，数据在 B，缓存在 C" | "一切都在 `~/.app-name/`" |
+| 调试/排查 | 需要知道 3-4 个不同路径，且路径因 OS 不同 | 一个路径，所有平台统一 |
+| 备份/清理 | 需要删除多个分散的目录 | 删除一个目录即可 |
+| 测试隔离 | 需要 mock 多个 base path | 一个 `t.TempDir()` |
+| SDK 复杂度 | 路径管理代码量大（web-clip-helper 的 `paths.py` 178 行） | 极简（wr 的等价代码约 30 行） |
+| 迁移逻辑 | 旧路径→多个新路径，迁移复杂 | 结构不变，无需迁移 |
+
+Agent-Native CLI 工具不是桌面应用——用户不会通过 OS 的备份工具管理它。它的用户是 AI Agent 和开发者，他们需要的是"一个路径、一个心理模型"。XDG 多路径带来的复杂性在这个场景下收益远低于成本。
+
+> 💡 实践注记（V2.3）：web-clip-helper 最初采用 XDG 多路径模式（`platformdirs` 库 + `get_config_dir()`/`get_data_dir()`/`get_cache_dir()` 三路径分离），在实际开发中遇到了显著的维护负担：路径管理代码膨胀到 178 行、迁移逻辑复杂、测试需要覆盖多路径场景、调试时用户（和 Agent）难以定位数据位置。wr 采用单目录模式（`~/.work-report/`）全程无此类问题。**结论：对于面向 AI Agent 的 CLI 工具，单目录模式是更优选择。** SDK 应默认采用单目录模式，不提供 XDG 多路径选项。
 
 ---
 
@@ -416,43 +445,59 @@ Agent-Native CLI 工具管理的数据具有完整的生命周期：创建、读
 
 > 💡 实践注记：wr 的 `complete` 操作将记录从 `tasks/active/` 移动到 `tasks/completed/YYYY/MM/DD/`。`list` 命令默认只返回 active 记录，需要 `--status completed` 或 `--status all` 才能查询已完成记录。这种"默认隐藏、按需展开"的策略减少了 Agent 日常操作的数据噪声。
 
-### 6.4 数据迁移策略（V2.2 新增）
+### 6.4 数据迁移策略（V2.2 新增，V2.3 修订）
 
-存量工具在升级到规范要求的 XDG 沙箱目录布局时，需要将历史数据从旧路径迁移到新路径。迁移必须**零数据丢失**。
+存量工具在升级沙箱目录布局时（如增加新的内部分区、变更目录结构），需要将历史数据从旧布局迁移到新布局。迁移必须**零数据丢失**。
+
+由于本规范采用单一目录模式（见 5.5.2），迁移只涉及同一 `base_dir` 内部的结构调整，不涉及跨目录的数据搬运。
 
 #### 6.4.1 复制 + 标记模式
 
 迁移**必须使用复制（copy）而非移动（move）**，配合标记文件：
 
 ```
-旧目录：~/.app-name/
-├── config.yaml
-├── clips.db
-├── clips/
-└── .migrated          ← 迁移完成后创建的标记文件
-
-新目录（XDG 标准）：
-~/.config/app-name/config.yaml
-~/.local/share/app-name/clips.db
-~/.local/share/app-name/clips/
+~/.app-name/                        ← base_dir 不变
+├── config.yaml                     ← 保留原位
+├── records.db                      ← 旧版：数据文件散落在根目录
+├── records/
+├── .migrated-to-v2                 ← 迁移完成后创建的标记文件
+│
+│   迁移后：
+├── config.yaml                     ← 不动
+├── data/                           ← 新版：业务数据统一放入 data/
+│   ├── records.db                  ← 从根目录复制而来
+│   └── records/
+├── cache/                          ← 新增分区
+├── locks/                          ← 新增分区
+└── crash_dumps/                    ← 新增分区
 ```
 
 **规则：**
-1. 迁移前检查标记文件（`.migrated`）。若已存在则跳过迁移。
-2. 复制所有数据文件到新路径。旧路径数据保持不变。
-3. 复制成功后，在旧目录创建 `.migrated` 标记文件。
-4. 后续所有操作只读写新路径。
-5. **不删除旧目录**——保留旧数据作为回退保障。
+1. 迁移前检查标记文件（如 `.migrated-to-v2`）。若已存在则跳过迁移。
+2. 在 `base_dir` 内部复制/移动文件到新分区。原始文件在确认迁移成功前保持不变。
+3. 复制成功后，在 `base_dir` 根目录创建标记文件。
+4. 后续所有操作使用新的目录结构。
+5. **不删除旧文件**——保留作为回退保障，直到用户手动清理或通过 `agent cache clean` 清理。
 
-**理由：** 移动操作在失败时不可恢复（如磁盘满、权限不足）。复制确保旧数据始终存在，即使新路径出问题也能回退。标记文件防止重复迁移。
+**理由：** 移动操作在失败时不可恢复（如磁盘满、权限不足）。复制确保数据始终存在，即使新布局出问题也能回退。标记文件防止重复迁移。
 
 #### 6.4.2 迁移失败处理
 
-- 任何文件复制失败 → 停止迁移，使用旧路径继续运行，输出 `type=warning` 提示迁移未完成。
-- 标记文件存在但新路径数据不完整 → 删除标记文件，下次启动时重新尝试。
+- 任何文件复制失败 → 停止迁移，使用旧布局继续运行，输出 `type=warning` 提示迁移未完成。
+- 标记文件存在但数据不完整 → 删除标记文件，下次启动时重新尝试。
 - **永远不要因为迁移失败而阻止工具正常运行。**
 
-> 💡 实践注记：web-clip-helper 在 `paths.py` 的 `ensure_dirs()` 中自动触发迁移。迁移覆盖 config.yaml、clips.db、clips/ 目录和 reports/ 目录。如果目标文件已存在（如用户手动复制过），则跳过该文件（幂等性）。迁移后工具对旧目录只做读检查（标记文件是否存在），不再写入。
+#### 6.4.3 从 XDG 多路径迁移到单目录模式
+
+如果存量工具此前采用了 XDG 多路径模式（如 `~/.config/<app>/` + `~/.local/share/<app>/` + `~/.local/state/<app>/` 分离），迁移到单目录模式时需额外处理：
+
+1. 将所有分散路径的数据**复制**到统一的 `base_dir` 中。
+2. 在旧路径的每个根目录下创建 `.migrated-to-single-dir` 标记文件。
+3. 后续所有操作只读写 `base_dir`。
+4. 旧路径数据保留不删除。
+5. 如果多个旧路径存在同名文件（如 config），使用数据量更大的版本（或保留两个并重命名）。
+
+> 💡 实践注记：web-clip-helper 最初使用 XDG 多路径模式（`platformdirs` 库），`paths.py` 中的 `ensure_dirs()` 自动触发旧路径→新路径迁移。迁移覆盖 config.yaml、clips.db、clips/ 目录和 reports/ 目录。如果目标文件已存在则跳过（幂等性）。但多路径迁移逻辑复杂，占据了 `paths.py` 大量篇幅。**V2.3 结论：后续版本应迁移到单目录模式，消除多路径带来的维护负担。SDK 应直接采用单目录模式，不提供 XDG 多路径选项。**
 
 ---
 
