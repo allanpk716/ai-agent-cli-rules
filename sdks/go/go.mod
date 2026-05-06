@@ -1,4 +1,4 @@
-module github.com/allanpk716/agent-cli-sdk
+module github.com/allanpk716/ai-agent-cli-rules/sdks/go
 
 go 1.24
 
