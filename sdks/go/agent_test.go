@@ -13,6 +13,108 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// TestAgentCommandsNoExtraBackwardCompat verifies that AgentCommands() with
+// no extra args returns exactly 6 sub-commands (backward compatibility).
+func TestAgentCommandsNoExtraBackwardCompat(t *testing.T) {
+	app := New("compat-tool", "1.0.0")
+	cmd := app.AgentCommands()
+
+	subs := cmd.Commands()
+	if len(subs) != 6 {
+		t.Fatalf("expected 6 sub-commands with no extra args, got %d", len(subs))
+	}
+
+	expected := map[string]bool{
+		"schema": false, "errors": false, "config": false,
+		"doctor": false, "debug": false, "cache": false,
+	}
+	for _, sub := range subs {
+		if _, ok := expected[sub.Name()]; !ok {
+			t.Errorf("unexpected sub-command %q", sub.Name())
+		}
+		expected[sub.Name()] = true
+	}
+	for name, found := range expected {
+		if !found {
+			t.Errorf("missing sub-command %q", name)
+		}
+	}
+}
+
+// TestAgentCommandsExtraSubcommands verifies that extra cobra.Command arguments
+// are appended to the agent tree as additional sub-commands.
+func TestAgentCommandsExtraSubcommands(t *testing.T) {
+	app := New("extra-tool", "1.0.0")
+
+	customCmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Run the daemon process",
+		Run:   func(cmd *cobra.Command, args []string) {},
+	}
+
+	cmd := app.AgentCommands(customCmd)
+
+	subs := cmd.Commands()
+	if len(subs) != 7 {
+		t.Fatalf("expected 7 sub-commands (6 standard + 1 extra), got %d", len(subs))
+	}
+
+	// Verify custom command is present.
+	found := false
+	for _, sub := range subs {
+		if sub.Name() == "daemon" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'daemon' in sub-commands")
+	}
+}
+
+// TestAgentCommandsExtraAppearsInSchema verifies that extra commands passed to
+// AgentCommands appear in the agent schema output.
+func TestAgentCommandsExtraAppearsInSchema(t *testing.T) {
+	app, buf := newTestApp("schema-extra-tool", "1.0.0")
+
+	daemonCmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Run the daemon process",
+		Run:   func(cmd *cobra.Command, args []string) {},
+	}
+
+	rootCmd := &cobra.Command{Use: "schema-extra-tool"}
+	rootCmd.AddCommand(app.AgentCommands(daemonCmd))
+	rootCmd.SetArgs([]string{"agent", "schema"})
+
+	code := app.Execute(rootCmd)
+	if code != ExitSuccess {
+		t.Fatalf("Execute() = %d, want %d", code, ExitSuccess)
+	}
+
+	env, err := parseEnvelope(strings.TrimSpace(buf.String()))
+	if err != nil {
+		t.Fatalf("parse envelope: %v", err)
+	}
+
+	dataBytes, _ := json.Marshal(env.Data)
+	var schema schemaOutput
+	json.Unmarshal(dataBytes, &schema)
+
+	foundDaemon := false
+	for _, cmd := range schema.Commands {
+		if cmd.Name == "agent daemon" {
+			foundDaemon = true
+			if cmd.Description != "Run the daemon process" {
+				t.Errorf("daemon Description = %q, want %q", cmd.Description, "Run the daemon process")
+			}
+		}
+	}
+	if !foundDaemon {
+		t.Error("expected 'agent daemon' in schema commands")
+	}
+}
+
 // TestAgentSchemaOutputsMetadata verifies that agent schema emits valid JSONL
 // with tool name, version, and command entries from the Cobra tree.
 func TestAgentSchemaOutputsMetadata(t *testing.T) {
@@ -1562,3 +1664,71 @@ func TestAgentDebugLastCrashWithMultipleDumps(t *testing.T) {
 		t.Errorf("signal = %v, want %q (newest by mtime)", dataMap["signal"], "SIGSEGV")
 	}
 }
+
+// --- T02: errors.As() classification tests ---
+
+// mockWhitelistProvider is a ConfigProvider whose Set method returns a
+// third-party WhitelistError implementation. This verifies that
+// agentConfigSetCmd classifies it as INPUT_INVALID via errors.As()
+// without any string matching.
+type mockWhitelistProvider struct{}
+
+func (m *mockWhitelistProvider) ListRedacted() (interface{}, error) {
+	return map[string]interface{}{}, nil
+}
+
+func (m *mockWhitelistProvider) Set(jsonPath, value string) error {
+	return &thirdPartyWhitelistError{field: jsonPath}
+}
+
+func (m *mockWhitelistProvider) Whitelist() []string {
+	return []string{}
+}
+
+// thirdPartyWhitelistError simulates a third-party ConfigProvider's
+// error type that satisfies WhitelistError via the marker-method convention.
+type thirdPartyWhitelistError struct {
+	field string
+}
+
+func (e *thirdPartyWhitelistError) Error() string {
+	return "custom provider: field " + e.field + " blocked by policy"
+}
+
+func (e *thirdPartyWhitelistError) Field() string         { return e.field }
+func (e *thirdPartyWhitelistError) IsWhitelistError() bool { return true }
+
+// TestAgentConfigSetClassifiesThirdPartyWhitelistError verifies that
+// agentConfigSetCmd uses errors.As() (not strings.Contains) to classify
+// a third-party WhitelistError as INPUT_INVALID.
+func TestAgentConfigSetClassifiesThirdPartyWhitelistError(t *testing.T) {
+	app, buf := newTestApp("thirdparty-wl-tool", "1.0.0")
+
+	// Register a mock provider that returns a third-party WhitelistError.
+	app.RegisterConfig("mock", &mockWhitelistProvider{})
+
+	rootCmd := &cobra.Command{Use: "thirdparty-wl-tool"}
+	rootCmd.AddCommand(app.AgentCommands())
+	rootCmd.SetArgs([]string{"agent", "config", "set", "some_field", "value"})
+
+	code := app.Execute(rootCmd)
+	if code != ExitInvalidParams {
+		t.Fatalf("Execute() = %d, want %d (INPUT_INVALID)", code, ExitInvalidParams)
+	}
+
+	env, err := parseEnvelope(strings.TrimSpace(buf.String()))
+	if err != nil {
+		t.Fatalf("parse envelope: %v", err)
+	}
+	if env.Type != TypeError {
+		t.Errorf("Type = %q, want %q", env.Type, TypeError)
+	}
+	if env.ErrorCode != "INPUT_INVALID" {
+		t.Errorf("ErrorCode = %q, want %q", env.ErrorCode, "INPUT_INVALID")
+	}
+	// Verify the error message is from the third-party provider, not a generic one.
+	if !strings.Contains(env.Message, "blocked by policy") {
+		t.Errorf("Message = %q, want third-party error message containing 'blocked by policy'", env.Message)
+	}
+}
+

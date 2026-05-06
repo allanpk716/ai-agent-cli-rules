@@ -2,9 +2,11 @@
 
 # 🤖 面向 AI Agent 的 CLI 工具设计规范 (Agent-Native CLI Spec)
 
-**版本:** V2.3 (单目录路径模式修订版)
+**版本:** V2.4 (Daemon 辅助模式 + 跨平台原子写入 + 结构化错误 + 测试隔离)
 **目标:** 彻底消除人类终端交互带来的解释歧义与"大模型幻觉"，构建 **100% 机器可读 (Machine-readable)**、行为确定、具备自我描述与生命周期自治能力的 AI Agent 基础设施生态。
 
+> **V2.4 修订说明：** 基于 M004 S01-S03 的 Go SDK 改进，新增 4.6（SDK Daemon 辅助模式：NewHTTPWriter 工厂函数、App.Registry() ErrorCode 映射）、5.5.3（跨平台原子写入：atomicReplace、Windows 跨卷 errno 17/18 回退）、5.6（结构化错误类型模式：WhitelistError/UnknownFieldError marker-method 惯例、errors.As 判断）、5.7（测试隔离模式：NewTestApp + WithTmpDir + AgentCommands 扩展钩子）。新增陷阱 11–12。
+>
 > **V2.3 修订说明：** 基于 wr（Go）和 web-clip-helper（Python）两个项目的实践经验，将路径策略从 XDG 多路径模式统一为**单目录模式**。理由：Agent-Native CLI 工具不是桌面应用，XDG 多路径带来的维护成本（路径管理代码膨胀、调试排查困难、测试隔离复杂、迁移逻辑沉重）远高于其收益。修订涉及：5.5.1（实践注记更新）、5.5.2（跨平台路径适配全面重写）、6.4（数据迁移策略从 XDG 迁移改为单目录内部迁移）。
 >
 > **V2.2 修订说明：** 基于 web-clip-helper（Python + Typer CLI）的 M004–M006 里程碑经验，对 V2.1 进行了补充修订。新增：2.4 静默模式、2.5 幂等响应模式、5.5.2 跨平台路径适配、6.4 数据迁移策略、附录 B 陷阱 8–10。修订以 `> 💡 实践注记：` blockquote 标注。
@@ -283,6 +285,46 @@ Panic 捕获需要区分两个不同的执行环境：
 
 > 💡 实践注记：wr 的实现中，`cmd.Execute()` 用 `defer func() { recover(); jsonl.ErrorWithCode("FATAL_CRASH", ...); os.Exit(1) }()` 兜底 CLI panic。daemon 侧用 `panicRecoveryMiddleware` 兜底 handler panic，返回 HTTP 200 + JSONL error envelope。两层互不干扰。测试时需要在 CLI 层和 daemon 层分别验证 panic 恢复路径。
 
+### 4.6 SDK Daemon 辅助模式（V2.4 新增）
+
+SDK 提供 daemon 辅助能力，降低 CLI→HTTP daemon 架构的接入成本。辅助能力定位为"桥接层"——SDK 不提供 daemon 框架本身（如进程管理、PID 文件、自动重启），只提供 daemon handler 编写所需的最小工具集。
+
+#### 4.6.1 NewHTTPWriter 工厂函数
+
+SDK 提供 `NewHTTPWriter(w http.ResponseWriter, toolName string) *Writer` 工厂函数，一行创建 daemon handler 的 JSONL Writer：
+
+```go
+func handleList(w http.ResponseWriter, r *http.Request) {
+    writer := agentsdk.NewHTTPWriter(w, "my-cli") // 自动设置 Content-Type + HTTP 200
+    records, err := storage.ListAll()
+    if err != nil {
+        writer.ErrorWithCode("storage_error", "failed to list records: "+err.Error())
+        return
+    }
+    writer.Success(records)
+}
+```
+
+**工厂函数自动完成的操作：**
+- 设置 `Content-Type: application/x-ndjson` 响应头。
+- 写入 HTTP 200 状态码。
+- 返回一个 `*Writer` 实例，后续所有 JSONL 输出通过该实例完成。
+
+**约束：**
+- `toolName` 为空时 panic——这是编程错误，应在启动时暴露，不应在请求时静默失败。
+- SDK **不提供** `DaemonHandlerFunc` adapter（决策 D018）。理由：用户的路由模式多样（`net/http`、chi、gorilla mux、gin 等），adapter 太 opinionative。工厂函数让用户保留自己的路由选择。
+
+#### 4.6.2 App.Registry() 与 ErrorCode 映射
+
+`App.Registry()` 返回 `*ErrorCodeRegistry`，daemon handler 和 CLI client 共享同一个 registry：
+
+- **daemon 侧**：handler 通过 `writer.ErrorWithCode("record_not_found", ...)` 发射 JSONL 错误，error_code 来自 registry。
+- **CLI client 侧**：通过 `registry.ToExitCode("record_not_found")` 将 daemon 的 string error_code 映射为 CLI 进程的 int 退出码。
+
+这种"daemon 说 string、CLI 转 int"的模式保证了两层使用同一份 error_code 定义，不需要维护两套枚举。
+
+> 💡 实践注记：`App.Registry()` 暴露 registry 是为了支持 daemon→CLI 的 error_code 映射。如果不暴露 registry，CLI client 包就需要硬编码 error_code→exit_code 的映射，与 daemon 侧的定义重复且容易不同步。暴露 registry 后，client 包只需调用 `registry.ToExitCode(code)` 即可。
+
 ---
 
 ## 第五章 工程实施与质量保障 (Engineering & QA)
@@ -405,6 +447,140 @@ CI/CD 流水线发版前，必须运行 Linter 对其随机参数注入检测：
 Agent-Native CLI 工具不是桌面应用——用户不会通过 OS 的备份工具管理它。它的用户是 AI Agent 和开发者，他们需要的是"一个路径、一个心理模型"。XDG 多路径带来的复杂性在这个场景下收益远低于成本。
 
 > 💡 实践注记（V2.3）：web-clip-helper 最初采用 XDG 多路径模式（`platformdirs` 库 + `get_config_dir()`/`get_data_dir()`/`get_cache_dir()` 三路径分离），在实际开发中遇到了显著的维护负担：路径管理代码膨胀到 178 行、迁移逻辑复杂、测试需要覆盖多路径场景、调试时用户（和 Agent）难以定位数据位置。wr 采用单目录模式（`~/.work-report/`）全程无此类问题。**结论：对于面向 AI Agent 的 CLI 工具，单目录模式是更优选择。** SDK 应默认采用单目录模式，不提供 XDG 多路径选项。
+
+#### 5.5.3 跨平台原子写入（V2.4 新增）
+
+`ConfigManager.Save` 使用 `atomicReplace` helper 实现跨平台原子写入，防止配置文件写入过程中断导致数据损坏。
+
+**写入策略：**
+
+1. **首选 `os.Rename`**——在同一文件系统上，rename 是原子操作（POSIX 保证）。
+2. **跨卷回退**——当 `os.Rename` 失败且错误码为跨设备（Windows errno 17 `ERROR_NOT_SAME_DEVICE`，Unix errno 18 `EXDEV`）时，回退到 `ReadFile` + `WriteFile` + `Remove` 三步操作。
+
+**Windows 跨卷场景：** 当系统 TEMP 目录在 C: 盘而配置文件在 D: 盘时，`os.CreateTemp` 生成的临时文件与目标文件不在同一卷，`os.Rename` 会失败。SDK 通过 `runtime.GOOS` 判断平台并检查 errno 自动处理此场景，不需要 build tags。
+
+**规则：**
+- 使用 `runtime.GOOS` 运行时判断，不使用 build tags。理由：单二进制跨平台分发时 build tags 无法覆盖，运行时判断更通用。
+- 回退路径使用 `os.Remove(src)` 的 error return 丢弃（`_ = os.Remove(src)`）——临时文件残留不影响功能，下次启动会清理。
+- 不使用 `syscall.Rename`——`os.Rename` 在 Go runtime 层已经做了平台适配。
+
+> 💡 实践注记：wr 的 `atomicReplace` 在 Windows 开发环境（TEMP=C:，配置=D:）触发过跨卷 rename 失败。最初的实现直接返回 rename error，导致 `config set` 在 Windows 上失败。修复后增加了 errno 17/18 的检测和 ReadFile+WriteFile 回退路径。测试时需要覆盖同卷（直接 rename 成功）和跨卷（回退路径）两种场景——跨卷测试可以通过在 Windows 上设置 `TMP` 环境变量到不同驱动器来触发，或在 Unix 上使用 bind mount。
+
+### 5.6 结构化错误类型模式（V2.4 新增）
+
+SDK 定义 `WhitelistError` 和 `UnknownFieldError` 两个接口，使用 Go 的 marker-method 惯例（同 `net.Error`），允许调用方通过 `errors.As()` 精确判断错误类型，而不依赖字符串匹配。
+
+#### 5.6.1 接口定义
+
+```go
+// WhitelistError 表示字段不在配置白名单中。
+type WhitelistError interface {
+    error
+    Field() string           // 返回被拒绝字段的 json-path 名称
+    IsWhitelistError() bool  // marker method，用于 errors.As 匹配
+}
+
+// UnknownFieldError 表示字段名在配置结构体中不存在。
+type UnknownFieldError interface {
+    error
+    Field() string              // 返回未知字段的 json-path 名称
+    IsUnknownFieldError() bool  // marker method，用于 errors.As 匹配
+}
+```
+
+#### 5.6.2 使用规则
+
+**必须使用 `errors.As()` 判断错误类型，禁止 `strings.Contains` 匹配错误消息。**
+
+```go
+// ✅ 正确：使用 errors.As 类型断言
+err := configManager.SetByPath("secret_field", "value")
+var whitelistErr agentsdk.WhitelistError
+if errors.As(err, &whitelistErr) {
+    // 精确知道是白名单拒绝，可以获取 whitelistErr.Field()
+}
+
+// ❌ 错误：使用字符串匹配
+if strings.Contains(err.Error(), "not in whitelist") {
+    // 脆弱：错误消息变更就会破坏判断逻辑
+}
+```
+
+#### 5.6.3 第三方 ConfigProvider 适配
+
+第三方 ConfigProvider（不 import SDK 类型）只需实现方法签名即可满足接口，不需要 import SDK 包。这是 marker-method 惯例的核心优势——接口满足基于方法集，不基于类型导入：
+
+```go
+// 第三方 ConfigProvider 的自定义错误类型
+type myProviderError struct {
+    field string
+}
+
+func (e *myProviderError) Error() string              { return "blocked: " + e.field }
+func (e *myProviderError) Field() string              { return e.field }
+func (e *myProviderError) IsWhitelistError() bool     { return true }
+
+// SDK 侧通过 errors.As 自动匹配
+var wlErr agentsdk.WhitelistError
+if errors.As(err, &wlErr) {
+    // 即使 err 来自第三方包，也能匹配
+}
+```
+
+> 💡 实践注记：`ConfigManager.SetByPath` 在路径校验失败时返回 `WhitelistError`（字段存在但不在白名单中）或 `UnknownFieldError`（字段名不存在）。CLI 的 `agent config set` 命令根据这两个接口将错误分类为 `INPUT_INVALID`（退出码 2），Agent 可以据此区分"拼写错误"和"权限不足"。SDK 测试中包含一个 `thirdPartyWhitelistError` 用例，验证第三方类型不需要 import SDK 即可满足接口。
+
+### 5.7 测试隔离模式（V2.4 新增）
+
+SDK 提供测试辅助设施，确保测试不依赖外部文件系统状态，每个测试用例完全隔离。
+
+#### 5.7.1 NewTestApp 与 Functional Options
+
+`NewTestApp(name, version string, opts ...TestOption)` 创建一个用于测试的 `App` 实例，输出写入 `bytes.Buffer` 而非 stdout，便于断言 JSONL 内容：
+
+```go
+func TestMyCommand(t *testing.T) {
+    app, buf := agentsdk.NewTestApp("my-cli", "1.0")
+    cmd := app.AgentCommands()
+    cmd.SetArgs([]string{"schema"})
+    cmd.Execute()
+    // buf.String() 包含完整的 JSONL 输出
+    envs, err := agentsdk.ParseEnvelopes(buf.String())
+    // ...断言 envs 的内容和类型
+}
+```
+
+**Functional Options：**
+- `WithTmpDir(dir string)` — 覆盖 sandbox 目录到指定路径。通常与 `t.TempDir()` 配合使用，确保测试产生的文件在测试结束后自动清理。
+
+```go
+func TestWithRealFiles(t *testing.T) {
+    tmp := t.TempDir()
+    app, buf := agentsdk.NewTestApp("my-cli", "1.0", agentsdk.WithTmpDir(tmp))
+    // app 的 sandbox 指向 tmp，所有文件操作都在 tmp 内
+}
+```
+
+#### 5.7.2 AgentCommands 扩展钩子
+
+`AgentCommands(extra ...*cobra.Command)` 接受可变数量的额外 `*cobra.Command`，用于在测试中注册业务命令：
+
+```go
+func TestBusinessCommand(t *testing.T) {
+    app, buf := agentsdk.NewTestApp("my-cli", "1.0")
+    myCmd := &cobra.Command{Use: "my-action", Run: myActionHandler}
+    rootCmd := &cobra.Command{Use: "my-cli"}
+    rootCmd.AddCommand(app.AgentCommands(myCmd))
+    rootCmd.SetArgs([]string{"agent", "my-action", "--flag", "value"})
+    rootCmd.Execute()
+}
+```
+
+**约束：**
+- `extra` 参数追加到 `agent` 命令的子命令列表中，不影响 SDK 内置的 `schema`、`config`、`doctor` 等命令。
+- 不传 `extra` 时行为与旧版完全兼容（向后兼容保证）。
+- 传入的 `extra` 命令会自动出现在 `agent schema` 的输出中。
+
+> 💡 实践注记：`NewTestApp` + `WithTmpDir` + `AgentCommands` 三者组合提供了完整的测试隔离——App 实例隔离（bytes.Buffer 输出）、文件系统隔离（t.TempDir）、命令注册隔离（按需注入）。测试不需要启动真实的 HTTP server 或修改全局状态。`ParseEnvelopes` 和 `MustParseEnvelopes` 辅助函数将 JSONL 字符串解析为 `Envelope` 结构体切片，便于在测试中断言 `type`、`error_code`、`data` 等字段。
 
 ---
 
@@ -615,6 +791,18 @@ Agent-Native CLI 工具管理的数据具有完整的生命周期：创建、读
   5. 在 CI 中作为发版阻断条件运行。
 
 > 💡 实践注记：web-clip-helper 的 `scripts/check_jsonl_purity.py` 使用 Python `ast` 模块遍历 `src/web_clip_helper/` 目录下的所有 `.py` 文件，查找所有 `print()` 调用，排除测试目录和 `output.py` 中的 `jsonl_emit` 函数本身。22 个 Linter 测试覆盖了各种边界情况（f-string print、多参数 print、注释中的 print 等）。
+
+### 陷阱 11：Windows 跨卷 atomicReplace 失败（V2.4 新增）
+
+**症状：** `agent config set` 在 Windows 上返回错误，但同样的代码在 Linux/macOS 上正常工作。
+**原因：** Windows 上系统 TEMP 目录（`os.TempDir()`）与配置文件不在同一卷（如 TEMP 在 C:，配置在 D:），`os.Rename` 返回 errno 17 `ERROR_NOT_SAME_DEVICE`。
+**修复：** 使用 `atomicReplace` helper，检测 errno 17（Windows）或 errno 18 `EXDEV`（Unix）后回退到 `ReadFile` + `WriteFile` + `Remove`。不使用 build tags，用 `runtime.GOOS` 运行时判断。
+
+### 陷阱 12：第三方错误类型无法通过 errors.As 匹配（V2.4 新增）
+
+**症状：** 自定义 ConfigProvider 返回的错误无法被 SDK 的错误分类逻辑识别，导致 `agent config set` 对合法的白名单拒绝返回通用错误码。
+**原因：** 错误类型使用字符串消息匹配（`strings.Contains(err.Error(), "whitelist")`），而非 marker-method 接口。
+**修复：** 使用 marker-method 惯例定义错误接口（`WhitelistError`、`UnknownFieldError`），第三方只需实现方法签名即可满足接口。用 `errors.As()` 判断，不用 `strings.Contains` 匹配消息。
 
 ---
 

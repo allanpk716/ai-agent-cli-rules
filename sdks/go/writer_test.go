@@ -184,3 +184,21 @@ func TestWriterSetTraceIDMidStream(t *testing.T) {
 		t.Errorf("second line trace_id = %v, want trace-xyz", lines[1]["trace_id"])
 	}
 }
+
+func TestNewWriterPanicsOnEmptyToolName(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for empty toolName, but did not panic")
+		}
+		msg, ok := r.(string)
+		if !ok {
+			t.Fatalf("panic value is not a string: %v", r)
+		}
+		if msg != "agentsdk: toolName must not be empty" {
+			t.Errorf("panic message = %q, want %q", msg, "agentsdk: toolName must not be empty")
+		}
+	}()
+	var buf bytes.Buffer
+	NewWriter(&buf, "")
+}

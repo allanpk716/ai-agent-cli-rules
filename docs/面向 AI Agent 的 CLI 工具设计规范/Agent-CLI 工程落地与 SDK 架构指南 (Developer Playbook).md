@@ -626,6 +626,60 @@ func CallDaemon(w io.Writer, method, path string, body io.Reader) error {
 
 > **wr 实践注记**：这是 wr 最重要的架构决策。初期曾考虑过"CLI 直接操作文件"的简单方案，但 LLM 调用需要 API key 管理、HTTP client 复用、定时调度——这些在每次 CLI 调用时重新初始化的开销不可接受。Daemon 模式让这些资源只初始化一次。
 
+### 4.5 Daemon Handler Writer 模式
+
+Daemon 的 HTTP handler 需要将业务结果以 JSONL 信封格式流式写回客户端。SDK 提供 `NewHTTPWriter` 工厂函数，一行代码完成 Writer 创建、Content-Type 设置和 HTTP 200 状态码写入：
+
+```go
+// daemon handler 示例
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+    writer := agentsdk.NewHTTPWriter(w, "my-tool") // 设置 Content-Type + 200
+    // ... 业务逻辑 ...
+    writer.Success(items)                           // 写 JSONL 信封到 w
+}
+```
+
+**`NewHTTPWriter` 做了三件事：**
+
+1. 校验 `toolName` 非空（空字符串会 panic）
+2. 设置 `Content-Type: application/x-ndjson`
+3. 写入 `http.StatusOK`（200）
+4. 内部调用 `NewWriter(w, toolName)` 返回标准的 `*Writer`
+
+```go
+// sdks/go/httpwriter.go — 实际实现
+func NewHTTPWriter(w http.ResponseWriter, toolName string) *Writer {
+    if toolName == "" {
+        panic("agentsdk: toolName must not be empty")
+    }
+    w.Header().Set("Content-Type", "application/x-ndjson")
+    w.WriteHeader(http.StatusOK)
+    return NewWriter(w, toolName)
+}
+```
+
+**为什么是工厂函数而不是 middleware？** SDK 的设计决策（D018）是只提供 `NewHTTPWriter`，不做 `DaemonHandlerFunc` adapter。原因在于用户使用的 HTTP 路由库各异（`net/http`、`chi`、`gorilla/mux`），adapter 太 opinionated。工厂函数让用户在自己的 handler 中自由调用。
+
+**panic 恢复的配合：** 如果 handler 中的业务逻辑 panic，`NewHTTPWriter` 已写入的 200 状态码和 Content-Type 不会回滚。Daemon server 应在更外层用 `recover()` middleware 捕获 panic 并返回 error 信封：
+
+```go
+// daemon middleware 示例
+func recoveryMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        defer func() {
+            if rec := recover(); rec != nil {
+                // 此时 NewHTTPWriter 可能已写入 200，但客户端
+                // 会看到连接关闭或 error 信封（取决于 panic 时机）
+                log.Printf("panic recovered: %v", rec)
+            }
+        }()
+        next.ServeHTTP(w, r)
+    })
+}
+```
+
+> **实践注记**：`NewHTTPWriter` 一旦调用就写入 200 状态码。如果后续需要返回错误（如参数校验失败），不要用 `http.Error()`——它尝试写 400 但 header 已发送会失败。正确做法是始终用 `writer.ErrorWithCode()` 写 JSONL error 信封，退出码由 CLI 层从信封中提取。
+
 ---
 
 ## 五、错误处理与退出码传播
@@ -742,9 +796,154 @@ $ wr add --type bad --title "test" --date 2026-01-01; echo $?
 
 ---
 
-## 六、数据导入导出模式
+## 六、配置管理适配器模式
 
-### 6.1 Fail-Fast Import（两阶段验证）
+M004 引入了结构化的配置管理 SDK，核心是 `ConfigProvider` 接口。这个接口连接了泛型 `ConfigManager[T]` 和非泛型的 agent 命令，同时允许第三方实现自定义存储后端。
+
+### 6.1 ConfigProvider 接口的两级选择
+
+SDK 提供两个层级的配置管理能力：
+
+| 级别 | 组件 | 适用场景 |
+|---|---|---|
+| **开箱即用** | `ConfigManager[T]` | 标准文件存储，泛型约束自动脱敏/校验/白名单 |
+| **自定义后端** | 实现 `ConfigProvider` 接口 | Etcd/Consul/数据库/远程 API 等非文件存储 |
+
+```go
+// ConfigProvider 接口 — ConfigManager[T] 自动满足
+type ConfigProvider interface {
+    ListRedacted() (interface{}, error) // 加载配置、脱敏、返回可 JSON 序列化的数据
+    Set(jsonPath, value string) error    // 校验白名单、设值、保存
+    Whitelist() []string                 // 返回可设字段列表
+}
+```
+
+**SDK 内置 `ConfigManager[T]` 自动满足接口：** 只需定义配置结构体并用 `config:"true"` 标记可设字段，`ConfigManager[T]` 的 `ListRedacted()`、`Set()`、`Whitelist()` 方法自动实现接口。
+
+```go
+// 用户定义配置结构体
+type MyConfig struct {
+    APIKey  string `json:"api_key"  config:"true"`  // 可通过 agent config set 修改
+    Model   string `json:"model"    config:"true"`  // 可设
+    Timeout int    `json:"timeout"  config:"true"`  // 可设
+    UserID  string `json:"user_id"`                  // 不可设（无 config:"true"）
+}
+
+// SDK 自动满足 ConfigProvider
+cm := agentsdk.NewConfigManager[MyConfig]("my-tool", "config.json")
+var _ agentsdk.ConfigProvider = cm // 编译期验证
+```
+
+### 6.2 结构化错误类型与 marker-method 惯例
+
+SDK 使用 Go 的 marker-method 惯例（类似 `net.Error`）定义结构化错误接口，而非导出具体类型：
+
+```go
+// WhitelistError — 尝试设置非白名单字段时返回
+type WhitelistError interface {
+    error
+    Field() string           // 被拒绝的字段名
+    IsWhitelistError() bool  // marker method
+}
+
+// UnknownFieldError — 设置不存在的字段时返回
+type UnknownFieldError interface {
+    error
+    Field() string              // 不存在的字段名
+    IsUnknownFieldError() bool  // marker method
+}
+```
+
+**关键设计：** 具体实现类型（`whitelistError`、`unknownFieldError`）是 unexported 的。第三方 ConfigProvider 不需要 import SDK 的具体类型，只需实现接口方法签名即可被 `errors.As()` 识别。
+
+### 6.3 errors.As() 分类模式
+
+Agent 命令使用 `errors.As()` 对 `ConfigProvider.Set()` 返回的错误进行分类：
+
+```go
+// agentConfigSetCmd 的错误分类流程
+err := provider.Set(args[0], args[1])
+if err != nil {
+    var whitelistErr WhitelistError
+    var unknownFieldErr UnknownFieldError
+    if errors.As(err, &whitelistErr) || errors.As(err, &unknownFieldErr) {
+        // 用户输入错误 → INPUT_INVALID + exit 2
+        a.writer.ErrorWithCode("INPUT_INVALID", err.Error())
+        return &ExitError{Code: ExitInvalidParams, Err: err}
+    }
+    // 系统内部错误 → INTERNAL_ERROR + exit 1
+    a.writer.ErrorWithCode("INTERNAL_ERROR", err.Error())
+    return &ExitError{Code: ExitFatalError, Err: err}
+}
+```
+
+**为什么不用 `strings.Contains`？** `strings.Contains(err.Error(), "whitelist")` 是脆弱的反模式：错误消息可能被国际化、重构或第三方 provider 自定义。`errors.As()` 基于接口匹配，是 Go 标准库推荐的模式。
+
+### 6.4 第三方 ConfigProvider 适配器示例
+
+以下示例展示如何为自定义存储后端（如环境变量）实现 `ConfigProvider`，并返回符合 SDK 错误分类的类型：
+
+```go
+// envConfigProvider — 从环境变量读取配置的第三方适配器
+type envConfigProvider struct {
+    prefix string
+}
+
+func (p *envConfigProvider) ListRedacted() (interface{}, error) {
+    return map[string]interface{}{
+        "api_key": "***",  // 脱敏
+        "model":   os.Getenv(p.prefix + "_MODEL"),
+        "timeout": os.Getenv(p.prefix + "_TIMEOUT"),
+    }, nil
+}
+
+func (p *envConfigProvider) Set(jsonPath, value string) error {
+    // 自定义白名单逻辑
+    allowed := map[string]bool{"model": true, "timeout": true}
+    if !allowed[jsonPath] {
+        // 返回满足 WhitelistError 接口的错误
+        return &envWhitelistError{field: jsonPath}
+    }
+    return os.Setenv(p.prefix+"_"+strings.ToUpper(jsonPath), value)
+}
+
+func (p *envConfigProvider) Whitelist() []string {
+    return []string{"model", "timeout"}
+}
+
+// envWhitelistError 满足 SDK 的 WhitelistError 接口
+type envWhitelistError struct{ field string }
+
+func (e *envWhitelistError) Error() string {
+    return "env: field " + e.field + " is not configurable"
+}
+func (e *envWhitelistError) Field() string         { return e.field }
+func (e *envWhitelistError) IsWhitelistError() bool { return true }
+
+// 注册到 App
+app.RegisterConfig("env", &envConfigProvider{prefix: "MY_TOOL"})
+```
+
+注册后，`agent config set` 命令会通过 `errors.As()` 自动将 `envWhitelistError` 分类为 `INPUT_INVALID`（exit 2），无需任何额外代码。
+
+### 6.5 与规范 Required/Optional 两级分层的对应
+
+设计规范第三章定义了 Required/Optional 两级配置分层。在 SDK 中这体现为：
+
+| 规范层 | SDK 机制 | 行为 |
+|---|---|---|
+| **Required** | `ConfigManager[T]` 构造函数或 `Validate()` | 缺少必填字段时返回 `ValidationError` |
+| **Optional** | `config:"true"` tag + `Whitelist()` | 未标记的字段不出现在 `agent config set` 白名单中 |
+
+`agent config set` 的白名单校验确保 agent 无法修改 Required 字段（它们由初始化流程或环境变量提供），只能修改 Optional 字段。
+
+> **实践注记**：`firstConfigProvider()` 模式意味着当前 SDK 只使用第一个注册的 ConfigProvider。如果注册了多个 provider，`agent config` 命令只操作第一个。这是刻意的设计——多配置源的场景（如 base + overlay）留待未来扩展。
+
+---
+
+## 七、数据导入导出模式
+
+### 7.1 Fail-Fast Import（两阶段验证）
 
 批量导入时不应该"导入一半然后报错"——这是数据损坏的源头。正确的模式是两阶段：
 
@@ -822,7 +1021,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-### 6.2 Filtered Export（复用 list 基础设施）
+### 7.2 Filtered Export（复用 list 基础设施）
 
 导出是 list 的文件输出变体——复用 `ListOptions` 过滤机制，写入文件而非 stdout：
 
@@ -841,7 +1040,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-### 6.3 Bulk Timeout
+### 7.3 Bulk Timeout
 
 批量操作的 HTTP 请求需要比单条操作更长的超时。wr 的 client 目前使用固定 5s 超时：
 
@@ -860,7 +1059,7 @@ func getTimeout(method, path string) time.Duration {
 }
 ```
 
-### 6.4 Buffer Capture for File Output
+### 7.4 Buffer Capture for File Output
 
 JSONL 默认写到 stdout（`os.Stdout`）。需要文件输出时，wr 的 `jsonl.Writer` 通过 `io.Writer` 接口支持任意目标：
 
@@ -877,15 +1076,15 @@ w.Success(record)
 // buf.String() 就是 JSONL 输出
 ```
 
-测试中利用这个特性做输出捕获和断言（见第七章）。
+测试中利用这个特性做输出捕获和断言（见第八章）。
 
 > **wr 实践注记**：import/export 是 wr v0.2 的规划功能。当前版本通过 `wr list --type meeting --from 2026-01-01` 获取 JSONL 输出，Agent 可以 pipe 到文件。但原生 export 更可靠（能保证文件完整写入，不会被 stdout 截断）。
 
 ---
 
-## 七、测试策略与 CI 保障
+## 八、测试策略与 CI 保障
 
-### 7.1 内联 JSON Fixture vs External File
+### 8.1 内联 JSON Fixture vs External File
 
 wr 使用**内联 JSON 字符串**作为测试 fixture，而非外部文件：
 
@@ -912,7 +1111,7 @@ err := callDaemonWithDir(&buf, dir, http.MethodPost, "/api/add",
 
 **何时用外部文件**：如果 JSON 结构超过 20 行（如完整的 report 结构），提取为 `testdata/*.json` 更清晰。
 
-### 7.2 Windows 时钟分辨率 + 单调计数器
+### 8.2 Windows 时钟分辨率 + 单调计数器
 
 Windows 的 `time.Now()` 精度只有 ~100ns 到 1ms。如果两条记录在同一毫秒内创建，仅靠时间戳生成 ShortID 会碰撞。wr 用单调计数器解决：
 
@@ -941,7 +1140,7 @@ func (s *Storage) AddRecord(rec interface{}) (interface{}, error) {
 
 **为什么不用 UUID**：ShortID 是给人看的（`wr update 2a0f2b1c`），16 字符 hex 比 36 字符 UUID 友好得多。碰撞概率在 seq 计数器的保护下为零。
 
-### 7.3 ValidateEnvelope 共享 Helper
+### 8.3 ValidateEnvelope 共享 Helper
 
 所有涉及 JSONL 输出的测试都使用 `validateAllEnvelopes` 或 `validateJSONLOutput`：
 
@@ -978,7 +1177,7 @@ func assertEnvelopeMeta(t *testing.T, env map[string]interface{}, expectedType s
 }
 ```
 
-### 7.4 测试环境隔离
+### 8.4 测试环境隔离
 
 wr 的测试使用 `setupTempHome` 将 daemon 状态文件重定向到临时目录：
 
@@ -1007,7 +1206,7 @@ func setupFakeDaemon(t *testing.T, tmpHome string, handler http.HandlerFunc) *ht
 }
 ```
 
-### 7.5 Exit Code 测试矩阵
+### 8.5 Exit Code 测试矩阵
 
 每个语义退出码都有对应的集成测试，使用 fake daemon 验证完整链路：
 
@@ -1024,17 +1223,17 @@ func TestDaemonNotRunningNoStateExit3(t *testing.T) // exit 3 — no state file
 
 > **wr 实践注记**：测试中使用 `t.TempDir()` 而非 `ioutil.TempDir`——前者在测试结束时自动清理，避免 CI 磁盘泄漏。JSONL 输出的时间戳通过 `nowFunc` 可覆盖（`jsonl` 包的 `var nowFunc`），但当前测试没有利用这一点——直接断言 timestamp 非空且格式正确更简单。
 
-### 7.6 AST 级别的 JSONL 纯度 Linter
+### 8.6 AST 级别的 JSONL 纯度 Linter
 
 规范 5.3 节要求 CI 中运行 Linter 检测非 JSONL 的 `print()` 调用。下面给出一个跨语言的实现模式。
 
-#### 7.6.1 设计原则
+#### 8.6.1 设计原则
 
 1. **AST 级别检测**：正则表达式容易误报（注释中的 `print`、字符串中的 `print`）。AST 解析可以精确定位函数调用节点。
 2. **白名单排除**：SDK 内部的 `jsonl_emit()` 函数需要调用底层 print，测试文件中的 `print()` 也不应被标记。维护排除目录和排除函数列表。
 3. **零误报容忍**：宁可漏报（新增 SDK 函数未加入白名单）也不能误报（阻断正常开发流程）。
 
-#### 7.6.2 Python 实现示例
+#### 8.6.2 Python 实现示例
 
 ```python
 # scripts/check_jsonl_purity.py
@@ -1076,7 +1275,7 @@ if __name__ == "__main__":
     main()
 ```
 
-#### 7.6.3 测试 Linter 本身
+#### 8.6.3 测试 Linter 本身
 
 Linter 本身也需要测试——覆盖各种边界情况：
 
@@ -1088,6 +1287,81 @@ Linter 本身也需要测试——覆盖各种边界情况：
 - 测试文件中的 `print()` → 不应被检测（目录排除）
 
 > **web-clip-helper 实践注记**：`scripts/check_jsonl_purity.py` 的 22 个测试覆盖了上述所有场景。Linter 在 CI 中作为独立 job 运行，任何 `src/` 目录下的非法 `print()` 调用都会阻断合并。Linter 检测到的违规数量应随项目成熟度趋近于零——如果频繁触发，说明 SDK 的输出 API 不够便利，开发者才绕过它。
+
+### 8.7 NewTestApp 与测试隔离增强
+
+SDK 提供 `NewTestApp` 工厂函数和 functional options，让测试代码无需关心 sandbox 初始化细节：
+
+```go
+// sdks/go/testhelpers.go
+func NewTestApp(name, version string, opts ...TestOption) (*App, *bytes.Buffer)
+
+// WithTmpDir 覆盖 sandbox 到指定临时目录
+func WithTmpDir(dir string) TestOption
+```
+
+**基本用法 — 默认 sandbox：**
+
+```go
+app, buf := agentsdk.NewTestApp("my-tool", "1.0.0")
+rootCmd := &cobra.Command{Use: "my-tool"}
+rootCmd.AddCommand(app.AgentCommands())
+rootCmd.SetArgs([]string{"agent", "config", "list"})
+app.Execute(rootCmd)
+// buf.String() 包含 JSONL 输出，可断言
+```
+
+**WithTmpDir — 测试文件系统操作：**
+
+```go
+func TestConfigSaveIsolation(t *testing.T) {
+    tmp := t.TempDir()  // 测试结束自动清理
+    app, _ := agentsdk.NewTestApp("iso-test", "1.0", agentsdk.WithTmpDir(tmp))
+
+    // app.Sandbox() 现在指向 tmp，不会污染真实 home 目录
+    // ConfigManager 的 Save 操作会写入 tmp/my-tool/config.json
+    assert.FileExists(t, filepath.Join(tmp, "iso-test", "config.json"))
+}
+```
+
+> **实践注记**：`t.TempDir()` 是 Go 1.15+ 提供的测试临时目录，测试结束后自动递归删除。`WithTmpDir` 将其与 SDK sandbox 桥接，避免测试残留文件泄漏到用户 home 目录。
+
+### 8.8 AgentCommands 扩展钩子
+
+`AgentCommands(extra ...*cobra.Command)` 接受可变参数，允许测试中注册自定义子命令：
+
+```go
+// 测试自定义 daemon 命令
+daemonCmd := &cobra.Command{
+    Use: "daemon",
+    Run: func(cmd *cobra.Command, args []string) {
+        // 自定义测试逻辑
+    },
+}
+
+rootCmd := &cobra.Command{Use: "test-tool"}
+rootCmd.AddCommand(app.AgentCommands(daemonCmd))
+rootCmd.SetArgs([]string{"agent", "daemon"})
+app.Execute(rootCmd)
+```
+
+这在测试 CLI 集成时特别有用——可以在不修改 SDK 的情况下为 agent 命令树添加测试辅助子命令。`AgentCommands()` 的向后兼容性保证：不传 `extra` 参数时行为与之前完全一致。
+
+### 8.9 ParseEnvelopes / MustParseEnvelopes 辅助函数
+
+SDK 提供的 JSONL 解析辅助函数简化测试中的输出断言：
+
+```go
+// ParseEnvelopes — 返回 ([]Envelope, error)，适合表驱动测试
+envs, err := agentsdk.ParseEnvelopes(buf.String())
+
+// MustParseEnvelopes — 失败时 t.Fatalf，适合快速断言
+envs := agentsdk.MustParseEnvelopes(t, buf.String())
+assert.Equal(t, 1, len(envs))
+assert.Equal(t, "result", envs[0].Type)
+```
+
+> **实践注记**：`ParseEnvelopes` 跳过空行，对每行调用 `json.Unmarshal`。`MustParseEnvelopes` 在解析失败时调用 `t.Fatalf`，不会返回 error——这是 Go 测试中常见的 `Must*` 惯例（如 `template.Must`），用于"这个不应该失败"的场景。
 
 ---
 
@@ -1130,6 +1404,14 @@ wr/
 │       ├── scheduler.go           # 调度引擎
 │       ├── state.go               # 调度状态持久化
 │       └── catchup.go             # 重启后补发遗漏提醒
+├── sdks/go/                        # M004 SDK 包
+│   ├── app.go                     # App struct + Register* + AgentCommands + Registry()
+│   ├── agent.go                   # ConfigProvider 接口 + agent 命令 handler
+│   ├── config.go                  # ConfigManager[T] + atomicReplace helper
+│   ├── errors.go                  # WhitelistError / UnknownFieldError 结构化错误
+│   ├── httpwriter.go              # NewHTTPWriter 工厂函数
+│   ├── testhelpers.go             # NewTestApp + WithTmpDir + ParseEnvelopes
+│   └── *_test.go                  # SDK 单元测试
 ```
 
 ## 附录 B：JSONL 输出示例

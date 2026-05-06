@@ -2,6 +2,7 @@ package agentsdk
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,8 +101,10 @@ type errorsOutput struct {
 
 // AgentCommands returns a *cobra.Command tree with Use "agent" containing
 // 6 sub-commands: schema, errors, config, doctor, debug, cache.
+// Optional extra sub-commands are appended after the standard ones,
+// allowing users to register custom commands under the agent tree.
 // Users add this to their rootCmd to enable all agent meta-commands.
-func (a *App) AgentCommands() *cobra.Command {
+func (a *App) AgentCommands(extra ...*cobra.Command) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Agent introspection and diagnostic commands",
@@ -113,6 +116,7 @@ func (a *App) AgentCommands() *cobra.Command {
 	cmd.AddCommand(a.agentDoctorCmd())
 	cmd.AddCommand(a.agentDebugCmd())
 	cmd.AddCommand(a.agentCacheCmd())
+	cmd.AddCommand(extra...)
 
 	return cmd
 }
@@ -234,13 +238,14 @@ func (a *App) agentConfigSetCmd() *cobra.Command {
 
 			err := provider.Set(args[0], args[1])
 			if err != nil {
-				// Distinguish whitelist violation from internal error.
-				errMsg := err.Error()
-				if strings.Contains(errMsg, "not configurable") || strings.Contains(errMsg, "not in whitelist") || strings.Contains(errMsg, "unknown field") {
-					a.writer.ErrorWithCode("INPUT_INVALID", errMsg)
+				// Classify errors via structured types — zero strings.Contains.
+				var whitelistErr WhitelistError
+				var unknownFieldErr UnknownFieldError
+				if errors.As(err, &whitelistErr) || errors.As(err, &unknownFieldErr) {
+					a.writer.ErrorWithCode("INPUT_INVALID", err.Error())
 					return &ExitError{Code: ExitInvalidParams, Err: err}
 				}
-				a.writer.ErrorWithCode("INTERNAL_ERROR", errMsg)
+				a.writer.ErrorWithCode("INTERNAL_ERROR", err.Error())
 				return &ExitError{Code: ExitFatalError, Err: err}
 			}
 

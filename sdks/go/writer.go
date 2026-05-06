@@ -14,7 +14,11 @@ type Writer struct {
 }
 
 // NewWriter creates a Writer that emits JSONL lines to out.
+// Panics if toolName is empty.
 func NewWriter(out io.Writer, toolName string) *Writer {
+	if toolName == "" {
+		panic("agentsdk: toolName must not be empty")
+	}
 	return &Writer{
 		out:      out,
 		toolName: toolName,

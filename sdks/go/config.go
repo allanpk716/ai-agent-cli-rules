@@ -2,12 +2,15 @@ package agentsdk
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Validator is an optional interface that config types can implement to
@@ -169,11 +172,58 @@ func (cm *ConfigManager[T]) Save(cfg T) error {
 		return fmt.Errorf("config: write tmp %q: %w", tmpFile, err)
 	}
 
-	if err := os.Rename(tmpFile, cm.filePath); err != nil {
+	if err := atomicReplace(tmpFile, cm.filePath); err != nil {
 		return fmt.Errorf("config: rename %q → %q: %w", tmpFile, cm.filePath, err)
 	}
 
 	return nil
+}
+
+// atomicReplace atomically replaces dst with src. It first tries os.Rename
+// (which is atomic on most platforms). If the rename fails due to a
+// cross-device/cross-volume error (e.g. TEMP on a different drive than the
+// config file on Windows), it falls back to ReadFile+WriteFile+Remove.
+func atomicReplace(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+
+	if !isCrossDeviceRenameError(err) {
+		return err
+	}
+
+	// Cross-device fallback: copy contents then remove source.
+	data, readErr := os.ReadFile(src)
+	if readErr != nil {
+		return fmt.Errorf("cross-device fallback: read %q: %w (rename: %v)", src, readErr, err)
+	}
+	if writeErr := os.WriteFile(dst, data, 0644); writeErr != nil {
+		return fmt.Errorf("cross-device fallback: write %q: %w (rename: %v)", dst, writeErr, err)
+	}
+	_ = os.Remove(src)
+	return nil
+}
+
+// isCrossDeviceRenameError checks whether err indicates a cross-device or
+// cross-volume rename failure:
+//   - Windows: ERROR_NOT_SAME_DEVICE (17)
+//   - Unix:    EXDEV (18)
+func isCrossDeviceRenameError(err error) bool {
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) {
+		return false
+	}
+	errno, ok := linkErr.Err.(syscall.Errno)
+	if !ok {
+		return false
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return errno == 17 // ERROR_NOT_SAME_DEVICE
+	default:
+		return errno == 18 // EXDEV
+	}
 }
 
 // Validate checks whether cfg implements the Validator interface and calls
@@ -222,12 +272,12 @@ func (cm *ConfigManager[T]) Redacted(cfg T) T {
 func (cm *ConfigManager[T]) SetByPath(cfg *T, jsonPath, value string) error {
 	idx, ok := cm.byJSONName[jsonPath]
 	if !ok {
-		return fmt.Errorf("config: unknown field %q", jsonPath)
+		return newUnknownFieldError(jsonPath)
 	}
 
 	fm := cm.fields[idx]
 	if !fm.configurable {
-		return fmt.Errorf("config: field %q is not configurable (not in whitelist)", jsonPath)
+		return newWhitelistError(jsonPath)
 	}
 
 	v := reflect.ValueOf(cfg)

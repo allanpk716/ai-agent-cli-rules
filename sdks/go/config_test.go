@@ -2,10 +2,13 @@ package agentsdk
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -279,8 +282,12 @@ func TestConfigSetByPathRejectsNonConfigurable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error setting non-configurable field")
 	}
-	if !strings.Contains(err.Error(), "not configurable") {
-		t.Errorf("error = %q, want 'not configurable'", err.Error())
+	var whitelistErr WhitelistError
+	if !errors.As(err, &whitelistErr) {
+		t.Errorf("error should be WhitelistError, got %T: %v", err, err)
+	}
+	if whitelistErr.Field() != "api_key" {
+		t.Errorf("WhitelistError.Field() = %q, want %q", whitelistErr.Field(), "api_key")
 	}
 }
 
@@ -292,8 +299,12 @@ func TestConfigSetByPathRejectsUnknownField(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown field")
 	}
-	if !strings.Contains(err.Error(), "unknown field") {
-		t.Errorf("error = %q, want 'unknown field'", err.Error())
+	var unknownErr UnknownFieldError
+	if !errors.As(err, &unknownErr) {
+		t.Errorf("error should be UnknownFieldError, got %T: %v", err, err)
+	}
+	if unknownErr.Field() != "nonexistent" {
+		t.Errorf("UnknownFieldError.Field() = %q, want %q", unknownErr.Field(), "nonexistent")
 	}
 }
 
@@ -457,5 +468,109 @@ func TestConfigWhitelistNestedFields(t *testing.T) {
 			t.Errorf("unexpected whitelist entry: %q", name)
 		}
 		expected[name] = true
+	}
+}
+
+func TestAtomicReplaceSameDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.tmp")
+	dst := filepath.Join(dir, "dst.json")
+
+	content := []byte(`{"hello": "world"}`)
+	if err := os.WriteFile(src, content, 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	if err := atomicReplace(src, dst); err != nil {
+		t.Fatalf("atomicReplace: %v", err)
+	}
+
+	// dst should have the content
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("dst content = %q, want %q", got, content)
+	}
+
+	// src should be gone (renamed)
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Error("src should not exist after atomic replace")
+	}
+}
+
+func TestIsCrossDeviceRenameError(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		want    bool
+		goosCond string // only check on this GOOS; empty = all
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "unrelated error",
+			err:  errors.New("something else"),
+			want: false,
+		},
+		{
+			name:    "Windows cross-device",
+			err:     &os.LinkError{Op: "rename", Old: "a", New: "b", Err: syscall.Errno(17)},
+			want:    true,
+			goosCond: "windows",
+		},
+		{
+			name:    "Unix EXDEV",
+			err:     &os.LinkError{Op: "rename", Old: "a", New: "b", Err: syscall.Errno(18)},
+			want:    true,
+			goosCond: "!windows",
+		},
+		{
+			name: "link error with wrong errno",
+			err:  &os.LinkError{Op: "rename", Old: "a", New: "b", Err: syscall.Errno(13)}, // EACCES
+			want: false,
+		},
+		{
+			name: "link error with non-errno Err",
+			err:  &os.LinkError{Op: "rename", Old: "a", New: "b", Err: errors.New("not an errno")},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.goosCond != "" {
+				if tt.goosCond == "windows" && runtime.GOOS != "windows" {
+					t.Skip("Windows-only check")
+				}
+				if tt.goosCond == "!windows" && runtime.GOOS == "windows" {
+					t.Skip("Unix-only check")
+				}
+			}
+			got := isCrossDeviceRenameError(tt.err)
+			if got != tt.want {
+				t.Errorf("isCrossDeviceRenameError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAtomicReplaceNonexistentSrc(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "missing.tmp")
+	dst := filepath.Join(dir, "dst.json")
+
+	err := atomicReplace(src, dst)
+	if err == nil {
+		t.Fatal("expected error for nonexistent source")
+	}
+	// Should NOT be a cross-device fallback attempt — just the original rename error
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) {
+		t.Errorf("expected *os.LinkError, got %T: %v", err, err)
 	}
 }

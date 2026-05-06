@@ -28,6 +28,18 @@ const (
 	SubdirCrashDumps = "crash_dumps"
 )
 
+// NewSandboxWithBaseDir creates a Sandbox with an explicit base directory,
+// bypassing env/home resolution. This is intended for testing scenarios
+// where callers need full control over the sandbox location.
+func NewSandboxWithBaseDir(appName, baseDir string) *Sandbox {
+	subdirs := []string{SubdirData, SubdirCache, SubdirLocks, SubdirCrashDumps}
+	return &Sandbox{
+		appName: appName,
+		baseDir: baseDir,
+		subdirs: subdirs,
+	}
+}
+
 // NewSandbox creates a Sandbox for the given application name.
 // The base directory is determined by:
 //  1. The environment variable <APP_NAME>_HOME (uppercased, hyphens→underscores)

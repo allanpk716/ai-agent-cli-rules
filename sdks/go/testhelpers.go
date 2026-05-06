@@ -10,10 +10,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// testAppConfig holds optional configuration for NewTestApp.
+type testAppConfig struct {
+	tmpDir string
+}
+
+// TestOption is a functional option for NewTestApp.
+type TestOption func(*testAppConfig)
+
+// WithTmpDir overrides the sandbox to use the specified directory.
+// This is typically used with t.TempDir() for test isolation.
+func WithTmpDir(dir string) TestOption {
+	return func(cfg *testAppConfig) {
+		cfg.tmpDir = dir
+	}
+}
+
 // NewTestApp creates an App wired to a bytes.Buffer writer for testing.
 // It returns the App and the Buffer so callers can inspect JSONL output.
-func NewTestApp(name, version string) (*App, *bytes.Buffer) {
+// Optional TestOption values can customize sandbox behavior; by default
+// the sandbox uses the standard home-directory resolution.
+func NewTestApp(name, version string, opts ...TestOption) (*App, *bytes.Buffer) {
+	var cfg testAppConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	app := New(name, version)
+	if cfg.tmpDir != "" {
+		app.sandbox = NewSandboxWithBaseDir(name, cfg.tmpDir)
+	}
 	buf := &bytes.Buffer{}
 	app.SetWriter(NewWriter(buf, name))
 	return app, buf

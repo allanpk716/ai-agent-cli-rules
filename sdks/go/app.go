@@ -64,6 +64,13 @@ func (a *App) Version() string {
 	return a.version
 }
 
+// Registry returns the app's ErrorCodeRegistry for external use.
+// This allows client packages to inject the registry via constructor
+// without needing a direct dependency on App internals.
+func (a *App) Registry() *ErrorCodeRegistry {
+	return a.registry
+}
+
 // Sandbox returns the app's Sandbox for directory management.
 // The sandbox is created in New() based on the app name.
 func (a *App) Sandbox() *Sandbox {
