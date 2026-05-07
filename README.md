@@ -78,8 +78,50 @@ $ my-tool agent schema
 
 ### Python SDK
 
+**方式一：从 PyPI 安装（推荐）**
+
 ```bash
 pip install agentsdk
+```
+
+> 需要 PyPI 已发布对应版本。查看 `sdks/python/pyproject.toml` 中的 `version` 字段确认当前版本。
+
+**方式二：从 GitHub 仓库安装**
+
+```bash
+# 安装最新 main 分支
+pip install "agentsdk @ git+https://github.com/allanpk716/ai-agent-cli-rules.git#subdirectory=sdks/python"
+
+# 安装指定 tag
+pip install "agentsdk @ git+https://github.com/allanpk716/ai-agent-cli-rules.git@v0.2.0#subdirectory=sdks/python"
+```
+
+**方式三：本地 editable 安装（开发时使用）**
+
+将本项目克隆到本地后：
+
+```bash
+# 克隆仓库（如果还没有）
+git clone https://github.com/allanpk716/ai-agent-cli-rules.git
+cd ai-agent-cli-rules
+
+# editable 安装，代码修改即时生效
+pip install -e "./sdks/python[dev]"
+```
+
+**方式四：requirements.txt / pyproject.toml 中声明依赖**
+
+```txt
+# requirements.txt — 指定 tag 版本
+agentsdk @ git+https://github.com/allanpk716/ai-agent-cli-rules.git@v0.2.0#subdirectory=sdks/python
+```
+
+```toml
+# pyproject.toml — 在 [project.dependencies] 中
+[project]
+dependencies = [
+    "agentsdk @ git+https://github.com/allanpk716/ai-agent-cli-rules.git@v0.2.0#subdirectory=sdks/python",
+]
 ```
 
 ```python
