@@ -94,6 +94,13 @@ func (r *ErrorCodeRegistry) ToExitCode(code string) int {
 	return ExitFatalError
 }
 
+// HasErrorCode returns true if the given error_code is registered
+// (built-in or custom). This is a convenience wrapper around Lookup.
+func (r *ErrorCodeRegistry) HasErrorCode(code string) bool {
+	_, _, ok := r.Lookup(code)
+	return ok
+}
+
 // AllCodes returns a copy of all registered codes (built-in + custom).
 // Modifications to the returned map do not affect the registry.
 func (r *ErrorCodeRegistry) AllCodes() map[string]errorCodeEntry {

@@ -49,3 +49,12 @@ class FlightContext:
         """Remove the value for *key*. No-op if the key does not exist."""
         with self._mu:
             self._data.pop(key, None)
+
+    def clear(self) -> None:
+        """Remove all key-value pairs from the context.
+
+        After calling ``clear()``, :meth:`snapshot` returns an empty dict.
+        Safe to call on an already-empty context (no-op).
+        """
+        with self._mu:
+            self._data.clear()

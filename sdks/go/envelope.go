@@ -25,11 +25,25 @@ type Envelope struct {
 	Message   string      `json:"message,omitempty"`
 	Percent   int         `json:"percent,omitempty"`
 	TraceID   string      `json:"trace_id,omitempty"`
+	Kind      string      `json:"kind,omitempty"`
 }
 
 // NewResultEnvelope creates a result envelope with data only.
 // Fields error_code and percent are guaranteed zero-valued (omitted from JSON).
-func NewResultEnvelope(tool string, data interface{}) Envelope {
+// When kind is non-empty, a top-level "kind" field is included in the JSON output.
+func NewResultEnvelope(tool string, data interface{}, kind ...string) Envelope {
+	var k string
+	if len(kind) > 0 && kind[0] != "" {
+		k = kind[0]
+	}
+	return Envelope{
+		Version:   EnvelopeVersion,
+		Tool:      tool,
+		Type:      TypeResult,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Data:      data,
+		Kind:      k,
+	}
 	return Envelope{
 		Version:   EnvelopeVersion,
 		Tool:      tool,

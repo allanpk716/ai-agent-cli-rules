@@ -186,3 +186,35 @@ func TestEnvelopeTimestampFormat(t *testing.T) {
 		t.Errorf("Timestamp %q doesn't look like RFC3339", env.Timestamp)
 	}
 }
+
+func TestNewResultEnvelopeWithKind(t *testing.T) {
+	// With kind
+	env := NewResultEnvelope("t", "data", "schema")
+	if env.Kind != "schema" {
+		t.Errorf("Kind = %q, want %q", env.Kind, "schema")
+	}
+	raw, _ := json.Marshal(env)
+	var m map[string]interface{}
+	json.Unmarshal(raw, &m)
+	if m["kind"] != "schema" {
+		t.Errorf("JSON kind = %v, want schema", m["kind"])
+	}
+
+	// Without kind
+	env2 := NewResultEnvelope("t", "data")
+	if env2.Kind != "" {
+		t.Errorf("Kind = %q, want empty", env2.Kind)
+	}
+	raw2, _ := json.Marshal(env2)
+	var m2 map[string]interface{}
+	json.Unmarshal(raw2, &m2)
+	if _, ok := m2["kind"]; ok {
+		t.Error("kind should be omitted from JSON when empty")
+	}
+
+	// With empty kind
+	env3 := NewResultEnvelope("t", "data", "")
+	if env3.Kind != "" {
+		t.Errorf("Kind = %q, want empty", env3.Kind)
+	}
+}

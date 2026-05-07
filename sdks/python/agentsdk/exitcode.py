@@ -81,6 +81,10 @@ class ErrorCodeRegistry:
             return EXIT_FATAL_ERROR
         return exit_code
 
+    def has_error_code(self, code: str) -> bool:
+        """Return ``True`` if *code* is registered (built-in or custom)."""
+        return self.lookup(code)[2]
+
     def all_codes(self) -> dict[str, tuple[int, str]]:
         """Return a **defensive copy** of all registered codes."""
         return dict(self._codes)

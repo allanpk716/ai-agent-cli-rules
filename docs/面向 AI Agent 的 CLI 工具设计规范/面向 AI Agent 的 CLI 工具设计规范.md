@@ -2,9 +2,11 @@
 
 # 🤖 面向 AI Agent 的 CLI 工具设计规范 (Agent-Native CLI Spec)
 
-**版本:** V2.4 (Daemon 辅助模式 + 跨平台原子写入 + 结构化错误 + 测试隔离)
+**版本:** V2.5 (Envelope kind 字段 + 测试隔离模式扩展 + on_help 钩子)
 **目标:** 彻底消除人类终端交互带来的解释歧义与"大模型幻觉"，构建 **100% 机器可读 (Machine-readable)**、行为确定、具备自我描述与生命周期自治能力的 AI Agent 基础设施生态。
 
+> **V2.5 修订说明：** 基于 M007 S01–S02 的 Python SDK 改进，新增 2.1.4（kind 字段说明：SDK 级可选字段、Go omitempty / Python None 省略语义）、5.7 扩展（Python reset_for_testing() 测试隔离模式、on_help 钩子说明）。修订 2.1.1（Envelope 定义增加 kind 可选字段）、2.1.2（字段互斥规则表增加 kind 列说明）。新增陷阱 13。
+>
 > **V2.4 修订说明：** 基于 M004 S01-S03 的 Go SDK 改进，新增 4.6（SDK Daemon 辅助模式：NewHTTPWriter 工厂函数、App.Registry() ErrorCode 映射）、5.5.3（跨平台原子写入：atomicReplace、Windows 跨卷 errno 17/18 回退）、5.6（结构化错误类型模式：WhitelistError/UnknownFieldError marker-method 惯例、errors.As 判断）、5.7（测试隔离模式：NewTestApp + WithTmpDir + AgentCommands 扩展钩子）。新增陷阱 11–12。
 >
 > **V2.3 修订说明：** 基于 wr（Go）和 web-clip-helper（Python）两个项目的实践经验，将路径策略从 XDG 多路径模式统一为**单目录模式**。理由：Agent-Native CLI 工具不是桌面应用，XDG 多路径带来的维护成本（路径管理代码膨胀、调试排查困难、测试隔离复杂、迁移逻辑沉重）远高于其收益。修订涉及：5.5.1（实践注记更新）、5.5.2（跨平台路径适配全面重写）、6.4（数据迁移策略从 XDG 迁移改为单目录内部迁移）。
@@ -54,7 +56,10 @@
 
   // type="progress" 时 (过程同步，支持通过 --quiet 屏蔽)
   "percent": 50,
-  "message": "处理分片 3/5 ..."
+  "message": "处理分片 3/5 ...",
+
+  // SDK 级可选字段（V2.5 新增，见 2.1.4）
+  "kind": "help | schema | ..."
 }
 ```
 
@@ -64,10 +69,12 @@
 
 | type | 允许字段 | 禁止字段 |
 |------|----------|----------|
-| `result` | `data` (必填), `message` (可选) | `error_code`, `percent` |
-| `error` | `error_code` (必填), `message` (必填) | `data`, `percent` |
-| `warning` | `message` (必填) | `data`, `error_code`, `percent` |
-| `progress` | `percent` (必填), `message` (可选) | `data`, `error_code` |
+| `result` | `data` (必填), `message` (可选), `kind` (可选) | `error_code`, `percent` |
+| `error` | `error_code` (必填), `message` (必填) | `data`, `percent`, `kind` |
+| `warning` | `message` (必填) | `data`, `error_code`, `percent`, `kind` |
+| `progress` | `percent` (必填), `message` (可选) | `data`, `error_code`, `kind` |
+
+**`kind` 字段（V2.5 新增）：** `kind` 是 SDK 级可选字段，**不参与** `data`/`error_code`/`percent` 的互斥规则。它作为 `type=result` 的辅助语义标注（如 `kind=help` 表示帮助文本、`kind=schema` 表示 schema 内容），仅在调用方显式提供时出现。详见 §2.1.4。
 
 **实现建议：** 使用 `omitempty` JSON tag 确保零值字段不出现在输出中。在测试中添加 field-separation 断言（如 wr 的 `TestEnvelopeFieldSeparation`）防止回归。
 
@@ -83,6 +90,58 @@
 - 便于 `agent errors` 命令直接输出排障字典。
 
 > 💡 实践注记：wr 的 `exitcode.FromErrorCode()` 函数将 daemon 端的 string error_code 映射为 CLI 进程的 int 退出码。daemon 全链路只使用 string，只在 CLI 侧做一次转换。如果反过来用 int error_code，daemon 和 CLI 之间需要维护两套枚举，增加不一致风险。
+
+#### 2.1.4 kind 字段说明（V2.5 新增）
+
+`kind` 是一个 **SDK 级可选字段**，用于在 `type=result` 的 envelope 中提供辅助语义标注。它不是协议级必填字段——当 `kind` 为空时，envelope **不输出该字段**。
+
+**设计定位：**
+
+| 维度 | 说明 |
+|------|------|
+| **层级** | SDK 级（非协议级）。`kind` 不影响 JSONL 协议的解析和路由逻辑。 |
+| **作用域** | 仅 `type=result` 时有效。`type=error`/`warning`/`progress` 不使用 `kind`。 |
+| **取值** | 开放字符串集合，由 SDK 和应用约定。当前已知值：`help`（帮助文本）、`schema`（schema 内容）。 |
+| **省略条件** | `kind` 为空字符串或 `None` 时，JSON 序列化完全省略该字段。 |
+
+**SDK 实现方式：**
+
+```go
+// Go SDK：使用 json:"kind,omitempty" 确保 zero value 不输出
+type Envelope struct {
+    // ...其他字段
+    Kind string `json:"kind,omitempty"`
+}
+
+// variadic 参数实现向后兼容
+func NewResultEnvelope(tool string, data interface{}, kind ...string) Envelope {
+    var k string
+    if len(kind) > 0 && kind[0] != "" {
+        k = kind[0]
+    }
+    return Envelope{Kind: k, /* ... */}
+}
+```
+
+```python
+# Python SDK：使用 Optional[str] = None，to_dict() 自动省略 None
+@dataclass
+class Envelope:
+    kind: Optional[str] = None
+
+    @classmethod
+    def result(cls, *, tool: str, data: Any, kind: str = "") -> Envelope:
+        return cls(tool=tool, type=TYPE_RESULT, data=data, kind=kind if kind else None)
+```
+
+**向后兼容保证：**
+- `kind` 参数在两个 SDK 中都是可选的（Go 使用 variadic `kind ...string`，Python 使用 `kind: str = ""`）。
+- 不传 `kind` 时行为与 V2.4 完全一致——输出中不包含 `kind` 字段。
+- Agent 消费端应**忽略未知的 `kind` 值**，不应因为 `kind` 字段存在而改变解析逻辑。
+
+> 💡 实践注记：`kind` 的设计决策（D022）选择了在 `success()` 方法上加可选参数而非创建专用的 `schema()`/`help()` 方法。理由是子类型是开放集合——每新增一个子类型就加一个方法会导致 API 膨胀。Go 的 variadic 参数和 Python 的默认值参数都保证了向后兼容：现有调用点不需要任何改动。
+
+---
 
 ### 2.2 语义化退出码 (Semantic Exit Codes)
 
@@ -582,6 +641,84 @@ func TestBusinessCommand(t *testing.T) {
 
 > 💡 实践注记：`NewTestApp` + `WithTmpDir` + `AgentCommands` 三者组合提供了完整的测试隔离——App 实例隔离（bytes.Buffer 输出）、文件系统隔离（t.TempDir）、命令注册隔离（按需注入）。测试不需要启动真实的 HTTP server 或修改全局状态。`ParseEnvelopes` 和 `MustParseEnvelopes` 辅助函数将 JSONL 字符串解析为 `Envelope` 结构体切片，便于在测试中断言 `type`、`error_code`、`data` 等字段。
 
+#### 5.7.3 Python reset_for_testing() 模式（V2.5 新增）
+
+Python SDK 提供 `App.reset_for_testing()` 方法，用于在测试用例之间重置运行时状态。与 Go 的 `NewTestApp`（创建全新实例）不同，Python 采用"重置已有实例"的模式，更适合 pytest fixture 生命周期管理。
+
+**重置边界（D024）：**
+
+`reset_for_testing()` 遵循严格的重置边界——只重置**运行时状态**（两次 `run()` 调用之间累积的状态），不重置 **setup-time 注册**（import/模块初始化阶段注册的配置）：
+
+| 类别 | 重置？ | 说明 |
+|------|--------|------|
+| `writer` | ✅ 重置 | 替换为新的 `Writer(io.StringIO())`，清除缓冲区 |
+| `flight_context` | ✅ 重置 | 调用 `FlightContext.clear()` 清除所有 key-value |
+| `fake_stream` | ✅ 重置 | 设为 `None`，`captured_output` 返回 `""` |
+| `error_code` registry | ❌ 保留 | 内置 + 自定义 error_code 注册在 setup-time |
+| `config_providers` | ❌ 保留 | 配置提供者在 setup-time 注册 |
+| `health_checks` | ❌ 保留 | 健康检查函数在 setup-time 注册 |
+| `command_meta` | ❌ 保留 | 命令元数据在 setup-time 注册 |
+| `on_help` callback | ❌ 保留 | setup-time 钩子，per D024 |
+
+**设计理由：** setup-time 注册是"测试环境搭建"的一部分（类似 `conftest.py` 中的 fixture），如果在每个测试用例之间重置它们，测试需要重复注册相同的 error_code、config_provider 和 health_check——这违反了 DRY 原则且容易遗漏。
+
+```python
+import pytest
+from agentsdk import App
+
+@pytest.fixture
+def app():
+    a = App("my-cli", "1.0")
+    a.register_error_code("custom_error", 10, "A custom error")
+    a.on_help(lambda text: None)  # setup-time hook
+    yield a
+    # no teardown needed — reset happens per-test
+
+def test_first_command(app):
+    app.reset_for_testing()
+    code = app.run(["agent", "schema"])
+    assert code == 0
+
+def test_second_command(app):
+    app.reset_for_testing()  # clean slate, but error_code + on_help survive
+    code = app.run(["agent", "doctor"])
+    assert code == 0
+```
+
+#### 5.7.4 on_help 钩子（V2.5 新增）
+
+`App.on_help(callback)` 注册一个在 `--help` 输出被捕获时调用的回调函数。这是 setup-time 注册，通过 `reset_for_testing()` 保留。
+
+**工作流程：**
+
+1. 当 CLI 参数包含 `--help` 时，Python SDK 设置 `help_invoked = "--help" in args`。
+2. Click 框架在 `standalone_mode=False` 下将帮助文本输出到 stdout（不抛 `SystemExit`）。
+3. 运行结束后，如果 `exit_code == 0` 且 `help_invoked == True`，SDK 检查是否有 `on_help` 回调：
+   - **有回调**：调用 `callback(captured_text)`，由回调决定如何处理。
+   - **无回调**：自动包装为 `kind="help"` 的 result envelope 发射。
+
+**关键实现细节：**
+
+- **`--help` 检测用 args 检查，不用 exit code**。Click 在 `standalone_mode=False` 下不抛 `SystemExit`，因此不能通过捕获 `SystemExit` 来检测 help 调用（见陷阱 13）。
+- **正常命令输出不被误判为 help**。只有当 `args` 中显式包含 `--help` 且退出码为 0 时才触发 help 处理逻辑。
+- **回调抑制默认行为**。注册 `on_help` 回调后，默认的 `kind="help"` envelope 自动包装行为被抑制——回调完全接管 help 文本的处理。
+
+```python
+app = App("my-cli", "1.0")
+help_texts = {}
+
+def capture_help(text: str) -> None:
+    help_texts["captured"] = text
+
+app.on_help(capture_help)
+
+code = app.run(["my-cli", "--help"])
+# help_texts["captured"] 现在包含帮助文本
+# 不会自动发射 kind="help" envelope
+```
+
+> 💡 实践注记：`on_help` 钩子的典型用途是在测试中捕获 help 文本用于断言，或在集成场景中将 help 文本转发到自定义输出通道（如 LLM 上下文窗口）。它是 setup-time 注册而非 runtime 行为，因此适合在 `conftest.py` 或模块初始化时配置一次，而非每个测试用例中重复注册。
+
 ---
 
 ## 第六章 数据生命周期 (Data Lifecycle)
@@ -803,6 +940,12 @@ Agent-Native CLI 工具管理的数据具有完整的生命周期：创建、读
 **症状：** 自定义 ConfigProvider 返回的错误无法被 SDK 的错误分类逻辑识别，导致 `agent config set` 对合法的白名单拒绝返回通用错误码。
 **原因：** 错误类型使用字符串消息匹配（`strings.Contains(err.Error(), "whitelist")`），而非 marker-method 接口。
 **修复：** 使用 marker-method 惯例定义错误接口（`WhitelistError`、`UnknownFieldError`），第三方只需实现方法签名即可满足接口。用 `errors.As()` 判断，不用 `strings.Contains` 匹配消息。
+
+### 陷阱 13：on_help 检测不能依赖 exit code（V2.5 新增）
+
+**症状：** Python SDK 中 `--help` 输出没有被正确捕获或包装为 `kind="help"` envelope，导致 Agent 收到裸文本而非 JSONL。
+**原因：** 开发者试图通过捕获 `SystemExit` 来检测 `--help` 调用（类似 argparse 的行为），但 Click 框架在 `standalone_mode=False` 下**不会抛出 `SystemExit`**——它将帮助文本直接输出到 stdout 并正常返回。
+**修复：** 使用 args 检查而非 exit code 检查。在 `run()` 入口处记录 `help_invoked = "--help" in (args or [])`，运行结束后结合 `exit_code == 0 && help_invoked` 来判断是否为 help 调用。这种方式不依赖框架特定的异常行为，对所有 Python CLI 框架都适用。
 
 ---
 

@@ -171,3 +171,29 @@ class TestFlightContextLargeValues:
 
         snap = fc.snapshot()
         assert snap["big"] == large_str
+
+
+# ---------------------------------------------------------------------------
+# Clear
+# ---------------------------------------------------------------------------
+
+
+class TestClear:
+    def test_clear_empties_populated_context(self):
+        fc = FlightContext()
+        fc.set("a", 1)
+        fc.set("b", "two")
+        fc.clear()
+        assert fc.snapshot() == {}
+
+    def test_clear_on_empty_is_noop(self):
+        fc = FlightContext()
+        fc.clear()
+        assert fc.snapshot() == {}
+
+    def test_clear_then_set_works(self):
+        fc = FlightContext()
+        fc.set("x", 1)
+        fc.clear()
+        fc.set("y", 2)
+        assert fc.snapshot() == {"y": 2}

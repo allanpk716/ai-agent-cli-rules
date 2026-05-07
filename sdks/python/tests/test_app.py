@@ -169,6 +169,20 @@ class TestRegisterMethods:
         app = App("x", "1.0")
         assert app.error_code_to_exit_code("NONEXISTENT") == EXIT_FATAL_ERROR
 
+    def test_has_error_code_builtin(self):
+        app = App("x", "1.0")
+        assert app.has_error_code("FATAL_CRASH") is True
+
+    def test_has_error_code_unknown(self):
+        app = App("x", "1.0")
+        assert app.has_error_code("UNKNOWN") is False
+
+    def test_has_error_code_after_register(self):
+        app = App("x", "1.0")
+        assert app.has_error_code("MY_ERR") is False
+        app.register_error_code("MY_ERR", 42, "custom error")
+        assert app.has_error_code("MY_ERR") is True
+
     def test_register_config(self):
         app = App("x", "1.0")
         provider = lambda: {"k": "v"}  # noqa: E731
@@ -671,3 +685,150 @@ class TestSystemExit:
         app = App("test-app", "1.0.0")
         code, jsonl, captured = _run_capture(app, cli)
         assert code == EXIT_SUCCESS
+
+
+# ========================================================================
+# App.reset_for_testing()
+# ========================================================================
+
+
+class TestResetForTesting:
+    def test_reset_clears_runtime_state(self):
+        """After reset: writer quiet=False, trace_id empty, flight_context empty, captured_output empty."""
+        app = App("x", "1.0")
+        app._writer.set_quiet(True)
+        app._writer.set_trace_id("abc")
+        app._flight_context.set("k", "v")
+        app._fake_stream = _FakeStream()
+        app._fake_stream.write("some output")
+
+        app.reset_for_testing()
+
+        assert app._writer._quiet is False
+        assert app._writer.trace_id == ""
+        assert app._flight_context.snapshot() == {}
+        assert app.captured_output == ""
+
+    def test_registered_error_codes_survive_reset(self):
+        """Custom error codes registered before reset must still be present."""
+        app = App("x", "1.0")
+        app.register_error_code("MY_CODE", 42, "custom")
+        app._writer.set_quiet(True)
+
+        app.reset_for_testing()
+
+        assert app.has_error_code("MY_CODE") is True
+        assert app.has_error_code("FATAL_CRASH") is True
+
+    def test_registered_config_providers_survive_reset(self):
+        """Config providers registered before reset must survive."""
+        app = App("x", "1.0")
+        provider = lambda: {"k": "v"}  # noqa: E731
+        app.register_config("my-config", provider)
+
+        app.reset_for_testing()
+
+        assert app._config_providers["my-config"] is provider
+
+    def test_registered_health_checks_survive_reset(self):
+        """Health checks registered before reset must survive."""
+        app = App("x", "1.0")
+        check = lambda: True  # noqa: E731
+        app.register_health_check("db", check)
+
+        app.reset_for_testing()
+
+        assert app._health_checks["db"] is check
+
+    def test_registered_command_meta_survive_reset(self):
+        """Command meta registered before reset must survive."""
+        app = App("x", "1.0")
+        meta = {"timeout": 30}
+        app.register_command_meta("deploy status", meta)
+
+        app.reset_for_testing()
+
+        assert app._command_meta["deploy status"] is meta
+
+
+# ========================================================================
+# App.on_help() hook
+# ========================================================================
+
+
+class TestOnHelp:
+    def test_on_help_callback_receives_help_text(self):
+        """Registered on_help callback should be called with captured help text."""
+        received: list[str] = []
+
+        def my_callback(text: str) -> None:
+            received.append(text)
+
+        app = App("test-app", "1.0.0")
+        app.on_help(my_callback)
+        cli = _make_typer_hello()
+        code, jsonl, captured = _run_capture(app, cli, args=["--help"])
+
+        assert code == EXIT_SUCCESS
+        assert len(received) == 1
+        # The callback should get the captured help text containing --help
+        assert "--help" in received[0]
+
+    def test_on_help_auto_wrap_emits_kind_help(self):
+        """Without a callback, --help should emit a kind='help' envelope."""
+        app = App("test-app", "1.0.0")
+        cli = _make_typer_hello()
+        code, jsonl, captured = _run_capture(app, cli, args=["--help"])
+
+        assert code == EXIT_SUCCESS
+        assert jsonl.strip() != ""
+        data = json.loads(jsonl.strip())
+        assert data["type"] == "result"
+        assert data["kind"] == "help"
+        # data should contain help text with --help or --name
+        assert "--help" in data["data"] or "--name" in data["data"]
+
+    def test_on_help_no_wrap_without_captured_output(self):
+        """Normal command with no captured output should not emit kind=help."""
+        app = App("test-app", "1.0.0")
+        cli = typer.Typer()
+
+        @cli.command()
+        def silent():
+            pass
+
+        code, jsonl, captured = _run_capture(app, cli, args=[])
+
+        assert code == EXIT_SUCCESS
+        # No captured output, no kind=help envelope
+        assert jsonl.strip() == ""
+
+    def test_on_help_skipped_on_error_exit(self):
+        """ExitError should prevent help handling even if captured output exists."""
+        cli = typer.Typer()
+
+        @cli.command()
+        def err_cmd():
+            print("some output before error")
+            raise ExitError(3, "bad", None)
+
+        app = App("test-app", "1.0.0")
+        code, jsonl, captured = _run_capture(app, cli, args=[])
+
+        assert code == 3
+        # captured output exists but code != EXIT_SUCCESS, so no help handling
+        assert "kind" not in jsonl
+        assert "help" not in jsonl
+
+    def test_on_help_callback_survives_reset_for_testing(self):
+        """on_help callback should survive reset_for_testing (setup-time hook)."""
+        app = App("test-app", "1.0.0")
+
+        def my_callback(text: str) -> None:
+            pass
+
+        app.on_help(my_callback)
+        assert app._on_help_callback is my_callback
+
+        app.reset_for_testing()
+        assert app._on_help_callback is my_callback

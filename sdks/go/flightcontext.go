@@ -41,6 +41,17 @@ func (fc *FlightContext) Delete(key string) {
 	delete(fc.data, key)
 }
 
+// Clear removes all key-value pairs from the context.
+// After calling Clear(), Snapshot() returns an empty map.
+// Safe to call on an already-empty context (no-op).
+func (fc *FlightContext) Clear() {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	for k := range fc.data {
+		delete(fc.data, k)
+	}
+}
+
 // Snapshot returns a shallow copy of the current key-value map.
 // The returned map is safe to mutate without affecting the FlightContext.
 // Snapshot does NOT deep-copy interface{} values — callers storing mutable

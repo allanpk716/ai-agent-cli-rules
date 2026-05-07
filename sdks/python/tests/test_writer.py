@@ -142,3 +142,39 @@ class TestJsonlFormat:
             assert "tool" in obj
             assert "timestamp" in obj
             assert "version" in obj
+
+
+class TestKind:
+    def test_success_with_kind(self):
+        buf = io.StringIO()
+        w = Writer(buf, tool_name="mytool")
+        w.success({"k": 1}, kind="schema")
+        lines = _parse_jsonl(buf.getvalue())
+        assert len(lines) == 1
+        assert lines[0]["kind"] == "schema"
+
+    def test_success_without_kind(self):
+        buf = io.StringIO()
+        w = Writer(buf, tool_name="mytool")
+        w.success({"k": 1})
+        lines = _parse_jsonl(buf.getvalue())
+        assert len(lines) == 1
+        assert "kind" not in lines[0]
+
+    def test_success_with_empty_kind(self):
+        buf = io.StringIO()
+        w = Writer(buf, tool_name="mytool")
+        w.success({"k": 1}, kind="")
+        lines = _parse_jsonl(buf.getvalue())
+        assert len(lines) == 1
+        assert "kind" not in lines[0]
+
+    def test_kind_preserved_with_trace_id(self):
+        buf = io.StringIO()
+        w = Writer(buf, tool_name="mytool")
+        w.set_trace_id("trace-abc")
+        w.success({"k": 1}, kind="schema")
+        lines = _parse_jsonl(buf.getvalue())
+        assert len(lines) == 1
+        assert lines[0]["kind"] == "schema"
+        assert lines[0]["trace_id"] == "trace-abc"

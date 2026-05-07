@@ -105,3 +105,34 @@ class TestErrorCodeRegistry:
         codes["INJECTED"] = (99, "fake", True)
         exit_code, desc, found = reg.lookup("INJECTED")
         assert found is False
+
+
+class TestHasErrorCode:
+    """Verify has_error_code convenience method on ErrorCodeRegistry."""
+
+    def test_builtin_code_returns_true(self):
+        reg = ErrorCodeRegistry()
+        assert reg.has_error_code("FATAL_CRASH") is True
+
+    def test_unknown_code_returns_false(self):
+        reg = ErrorCodeRegistry()
+        assert reg.has_error_code("CUSTOM") is False
+
+    def test_after_register_returns_true(self):
+        reg = ErrorCodeRegistry()
+        assert reg.has_error_code("CUSTOM") is False
+        reg.register("CUSTOM", 10, "custom error")
+        assert reg.has_error_code("CUSTOM") is True
+
+    def test_all_builtin_codes_are_found(self):
+        reg = ErrorCodeRegistry()
+        for code in ["FATAL_CRASH", "INTERNAL_ERROR", "INPUT_INVALID", "NOT_FOUND", "RESOURCE_LOCKED"]:
+            assert reg.has_error_code(code) is True
+
+    def test_all_codes_returns_non_empty_dict_with_builtin_keys(self):
+        reg = ErrorCodeRegistry()
+        codes = reg.all_codes()
+        assert isinstance(codes, dict)
+        assert len(codes) >= 5
+        for code in ["FATAL_CRASH", "INTERNAL_ERROR", "INPUT_INVALID", "NOT_FOUND", "RESOURCE_LOCKED"]:
+            assert code in codes

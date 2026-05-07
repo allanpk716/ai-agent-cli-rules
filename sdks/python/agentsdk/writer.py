@@ -55,9 +55,16 @@ class Writer:
     # Public emit methods
     # ------------------------------------------------------------------
 
-    def success(self, data) -> None:
-        """Emit a **result** envelope carrying *data*."""
-        self._emit(Envelope.result(tool=self._tool_name, data=data))
+    def success(self, data, *, kind: str = "") -> None:
+        """Emit a **result** envelope carrying *data*.
+
+        Parameters
+        ----------
+        kind:
+            Optional message subtype. When non-empty, a top-level ``kind``
+            field is included in the serialized JSONL envelope.
+        """
+        self._emit(Envelope.result(tool=self._tool_name, data=data, kind=kind))
 
     def error_with_code(self, code: str, message: str) -> None:
         """Emit an **error** envelope carrying *code* and *message*."""

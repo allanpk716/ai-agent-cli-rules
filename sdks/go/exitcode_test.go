@@ -250,6 +250,58 @@ func TestAllCodes_NewRegistryHasBuiltInsOnly(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ErrorCodeRegistry — HasErrorCode
+// ---------------------------------------------------------------------------
+
+func TestHasErrorCode_BuiltIn(t *testing.T) {
+	r := NewErrorCodeRegistry()
+
+	builtInCodes := []string{"FATAL_CRASH", "INTERNAL_ERROR", "INPUT_INVALID", "NOT_FOUND", "RESOURCE_LOCKED"}
+	for _, code := range builtInCodes {
+		t.Run(code, func(t *testing.T) {
+			if !r.HasErrorCode(code) {
+				t.Errorf("HasErrorCode(%q) = false, want true", code)
+			}
+		})
+	}
+}
+
+func TestHasErrorCode_Unknown(t *testing.T) {
+	r := NewErrorCodeRegistry()
+	if r.HasErrorCode("CUSTOM") {
+		t.Error("HasErrorCode(CUSTOM) should be false for unknown code")
+	}
+}
+
+func TestHasErrorCode_AfterRegister(t *testing.T) {
+	r := NewErrorCodeRegistry()
+	if r.HasErrorCode("CUSTOM") {
+		t.Fatal("HasErrorCode(CUSTOM) should be false before Register")
+	}
+	_ = r.Register("CUSTOM", 10, "自定义")
+	if !r.HasErrorCode("CUSTOM") {
+		t.Error("HasErrorCode(CUSTOM) should be true after Register")
+	}
+}
+
+func TestAllCodesAccessible(t *testing.T) {
+	r := NewErrorCodeRegistry()
+	all := r.AllCodes()
+
+	// AllCodes() must be publicly accessible and return built-in keys.
+	requiredKeys := []string{"FATAL_CRASH", "INTERNAL_ERROR", "INPUT_INVALID", "NOT_FOUND", "RESOURCE_LOCKED"}
+	for _, key := range requiredKeys {
+		if _, ok := all[key]; !ok {
+			t.Errorf("AllCodes() missing built-in key %q", key)
+		}
+	}
+
+	if len(all) < 5 {
+		t.Errorf("AllCodes() has %d entries, want at least 5", len(all))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
 

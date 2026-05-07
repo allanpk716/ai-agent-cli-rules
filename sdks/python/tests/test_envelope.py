@@ -168,3 +168,26 @@ class TestEnvelopeToolName:
         raw = env.to_json()
         obj = json.loads(raw)
         assert obj["tool"] == "my-special-tool"
+
+
+class TestEnvelopeKind:
+    def test_result_envelope_with_kind(self):
+        env = Envelope.result(tool="t", data="d", kind="help")
+        assert env.kind == "help"
+        raw = env.to_json()
+        obj = json.loads(raw)
+        assert obj["kind"] == "help"
+
+    def test_result_envelope_without_kind(self):
+        env = Envelope.result(tool="t", data="d")
+        assert env.kind is None
+        raw = env.to_json()
+        obj = json.loads(raw)
+        assert "kind" not in obj
+
+    def test_result_envelope_empty_kind(self):
+        env = Envelope.result(tool="t", data="d", kind="")
+        assert env.kind is None
+        raw = env.to_json()
+        obj = json.loads(raw)
+        assert "kind" not in obj

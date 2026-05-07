@@ -184,3 +184,23 @@ func TestFlightContextLargeValues(t *testing.T) {
 		t.Error("Snapshot()[big] did not contain the same large string")
 	}
 }
+
+func TestClear(t *testing.T) {
+	fc := NewFlightContext()
+	fc.Set("a", 1)
+	fc.Set("b", "two")
+	fc.Clear()
+	snap := fc.Snapshot()
+	if len(snap) != 0 {
+		t.Errorf("Snapshot() after Clear() has %d items, want 0", len(snap))
+	}
+}
+
+func TestClearOnEmptyIsNoop(t *testing.T) {
+	fc := NewFlightContext()
+	fc.Clear()
+	snap := fc.Snapshot()
+	if len(snap) != 0 {
+		t.Errorf("Snapshot() after Clear() on empty has %d items, want 0", len(snap))
+	}
+}

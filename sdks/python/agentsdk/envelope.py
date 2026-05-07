@@ -45,15 +45,24 @@ class Envelope:
     message: Optional[str] = None
     percent: int = 0
     trace_id: Optional[str] = None
+    kind: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Constructors (one per envelope type)
     # ------------------------------------------------------------------
 
     @classmethod
-    def result(cls, *, tool: str, data: Any) -> Envelope:
-        """Create a result envelope — carries ``data`` only."""
-        return cls(tool=tool, type=TYPE_RESULT, data=data)
+    def result(cls, *, tool: str, data: Any, kind: str = "") -> Envelope:
+        """Create a result envelope — carries ``data`` only.
+
+        Parameters
+        ----------
+        kind:
+            Optional message subtype. When non-empty, a top-level ``kind``
+            field is included in the serialized JSONL envelope. When empty,
+            the field is omitted entirely (backward compatible).
+        """
+        return cls(tool=tool, type=TYPE_RESULT, data=data, kind=kind if kind else None)
 
     @classmethod
     def error(cls, *, tool: str, error_code: str, message: str) -> Envelope:

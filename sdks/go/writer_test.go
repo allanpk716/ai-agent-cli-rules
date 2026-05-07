@@ -202,3 +202,38 @@ func TestNewWriterPanicsOnEmptyToolName(t *testing.T) {
 	var buf bytes.Buffer
 	NewWriter(&buf, "")
 }
+
+func TestWriterSuccessWithKind(t *testing.T) {
+	// Success with kind
+	var buf bytes.Buffer
+	w := NewWriter(&buf, "my-tool")
+	err := w.Success(map[string]string{"k": "v"}, "schema")
+	if err != nil {
+		t.Fatalf("Success() error: %v", err)
+	}
+	lines := parseJSONLines(t, &buf)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if lines[0]["kind"] != "schema" {
+		t.Errorf("kind = %v, want schema", lines[0]["kind"])
+	}
+
+	// Success without kind
+	var buf2 bytes.Buffer
+	w2 := NewWriter(&buf2, "my-tool")
+	_ = w2.Success(map[string]string{"k": "v"})
+	lines2 := parseJSONLines(t, &buf2)
+	if _, ok := lines2[0]["kind"]; ok {
+		t.Error("kind should be omitted when not provided")
+	}
+
+	// Success with empty kind
+	var buf3 bytes.Buffer
+	w3 := NewWriter(&buf3, "my-tool")
+	_ = w3.Success(map[string]string{"k": "v"}, "")
+	lines3 := parseJSONLines(t, &buf3)
+	if _, ok := lines3[0]["kind"]; ok {
+		t.Error("kind should be omitted when empty string")
+	}
+}

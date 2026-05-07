@@ -43,8 +43,9 @@ func (w *Writer) SetTraceID(id string) {
 }
 
 // Success emits a result envelope with the given data.
-func (w *Writer) Success(data interface{}) error {
-	return w.emit(NewResultEnvelope(w.toolName, data))
+// An optional kind parameter adds a top-level "kind" field to the envelope.
+func (w *Writer) Success(data interface{}, kind ...string) error {
+	return w.emit(NewResultEnvelope(w.toolName, data, kind...))
 }
 
 // ErrorWithCode emits an error envelope with the given error code and message.

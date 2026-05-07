@@ -106,6 +106,9 @@ class App:
         if self._trace_id:
             self._writer.set_trace_id(self._trace_id)
 
+        # on_help callback (setup-time, survives reset_for_testing per D024).
+        self._on_help_callback: Optional[Callable[[str], None]] = None
+
         # Last _FakeStream, exposed for test inspection.
         self._fake_stream: Optional[_FakeStream] = None
 
@@ -161,6 +164,36 @@ class App:
         self._writer = writer
 
     # ------------------------------------------------------------------
+    # reset_for_testing
+    # ------------------------------------------------------------------
+
+    def reset_for_testing(self) -> None:
+        """Reset runtime state for test isolation (per D024).
+
+        Resets only **runtime** state that accumulates between ``run()``
+        calls:
+
+        - **writer**: replaced with a fresh :class:`Writer` (quiet=False,
+          trace_id empty).
+        - **flight_context**: all key-value pairs removed via
+          :meth:`FlightContext.clear`.
+        - **fake_stream**: set to ``None`` so :attr:`captured_output`
+          returns ``""``.
+
+        **NOT** reset (these survive across test runs because they are
+        registered during import / module setup):
+
+        - ``error_code`` registry (built-in + custom codes)
+        - ``config_providers``
+        - ``health_checks``
+        - ``command_meta``
+        - ``on_help`` callback (setup-time hook per D024)
+        """
+        self._writer = Writer(io.StringIO(), tool_name=self._name)
+        self._flight_context.clear()
+        self._fake_stream = None
+
+    # ------------------------------------------------------------------
     # Register methods
     # ------------------------------------------------------------------
 
@@ -180,12 +213,29 @@ class App:
         """Register metadata enrichment for a command path."""
         self._command_meta[cmd_path] = meta
 
+    def on_help(self, callback: Callable[[str], None]) -> None:
+        """Register a callback invoked when ``--help`` output is captured.
+
+        The callback receives the captured help text as its sole argument.
+        When a callback is registered, the default auto-wrap behaviour
+        (emitting a ``kind='help'`` envelope) is suppressed — the callback
+        is fully responsible for handling the text.
+
+        This is a **setup-time** registration and survives
+        :meth:`reset_for_testing` (per D024).
+        """
+        self._on_help_callback = callback
+
     def error_code_to_exit_code(self, code: str) -> int:
         """Look up the numeric exit code for *code*.
 
         Returns ``EXIT_FATAL_ERROR`` for unknown codes.
         """
         return self._registry.to_exit_code(code)
+
+    def has_error_code(self, code: str) -> bool:
+        """Return ``True`` if *code* is registered (built-in or custom)."""
+        return self._registry.has_error_code(code)
 
     # ------------------------------------------------------------------
     # run() — main orchestration
@@ -274,6 +324,7 @@ class App:
 
         # -- 5-6. Run with panic recovery ---------------------------------------
         code = EXIT_SUCCESS
+        help_invoked = "--help" in (args or [])
         try:
             try:
                 click_cmd(args, standalone_mode=False)
@@ -311,6 +362,18 @@ class App:
                 msg = f"panic: {panic_value}\n{tb_str}"
                 real_writer.error_with_code("FATAL_CRASH", msg)
                 code = EXIT_FATAL_ERROR
+
+            # -- Help handling (non-crash exit with captured output) --
+            # Fires when --help was invoked (Click prints help to stdout in
+            # standalone_mode=False without raising SystemExit). Normal command
+            # completion that prints to stdout is NOT treated as help output.
+            if code == EXIT_SUCCESS and help_invoked:
+                captured = fake.getvalue()
+                if captured.strip():
+                    if self._on_help_callback:
+                        self._on_help_callback(captured)
+                    else:
+                        real_writer.success(captured, kind="help")
         finally:
             # -- 7. Cleanup -----------------------------------------------------
             sys.stdout = self._real_stdout
