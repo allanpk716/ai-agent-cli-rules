@@ -35,6 +35,20 @@ from agentsdk.health import HealthCheckStatus, HealthCheckResult, HealthCheckFun
 from agentsdk.command_meta import CommandMeta
 from agentsdk.agent_commands import create_agent_app
 
+# S03 — Backup module
+from agentsdk.backup import (
+    BackupConfig,
+    BackupMeta,
+    CreateBackup,
+    DefaultBackupConfig,
+    GFSRotate,
+    ListBackups,
+    LoadBackupConfig,
+    RetentionPolicy,
+    RotationResult,
+    SaveBackupConfig,
+)
+
 __all__ = [
     # S01
     "ENVELOPE_VERSION",
@@ -69,4 +83,15 @@ __all__ = [
     "HealthCheckFunc",
     "CommandMeta",
     "create_agent_app",
+    # S03 — Backup
+    "BackupMeta",
+    "CreateBackup",
+    "ListBackups",
+    "GFSRotate",
+    "RetentionPolicy",
+    "RotationResult",
+    "BackupConfig",
+    "DefaultBackupConfig",
+    "LoadBackupConfig",
+    "SaveBackupConfig",
 ]
