@@ -21,6 +21,7 @@ type App struct {
 	registry      *ErrorCodeRegistry
 	sandbox       *Sandbox
 	flightContext *FlightContext
+	logger        *Logger
 
 	// Agent command registration maps.
 	configProviders map[string]ConfigProvider
@@ -36,13 +37,16 @@ func New(name, version string) *App {
 	if tid := os.Getenv("AGENT_TRACE_ID"); tid != "" {
 		w.SetTraceID(tid)
 	}
+	sandbox := NewSandbox(name)
+	logger, _ := NewLogger(DefaultLoggerSettings(name, sandbox.LogsDir()))
 	return &App{
 		name:            name,
 		version:         version,
 		writer:          w,
 		registry:        NewErrorCodeRegistry(),
-		sandbox:         NewSandbox(name),
+		sandbox:         sandbox,
 		flightContext:   NewFlightContext(),
+		logger:          logger,
 		configProviders: make(map[string]ConfigProvider),
 		healthChecks:    make(map[string]HealthCheckFunc),
 		commandMeta:     make(map[string]CommandMeta),
@@ -81,6 +85,12 @@ func (a *App) Sandbox() *Sandbox {
 // Values set in FlightContext will be captured in crash dumps on signal or panic.
 func (a *App) FlightContext() *FlightContext {
 	return a.flightContext
+}
+
+// Logger returns the app's Logger for structured file-based logging.
+// The logger writes to the sandbox logs directory with automatic rotation.
+func (a *App) Logger() *Logger {
+	return a.logger
 }
 
 // RegisterErrorCode delegates to the app's ErrorCodeRegistry.
@@ -152,6 +162,9 @@ func (a *App) Execute(rootCmd *cobra.Command) (code int) {
 		a.sandbox, a.flightContext,
 	)
 	defer stopSignalHandler()
+
+	// Close logger last — after signal handler and panic recovery have finished.
+	defer a.logger.Close()
 
 	code = ExitSuccess
 

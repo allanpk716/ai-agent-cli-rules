@@ -647,6 +647,57 @@ func TestAppFlightContextAccessor(t *testing.T) {
 	}
 }
 
+func TestAppLogger(t *testing.T) {
+	tmpDir := t.TempDir()
+	app := New("logger-test", "1.0")
+	app.sandbox = NewSandboxWithBaseDir("logger-test", tmpDir)
+
+	// Recreate logger pointing to temp sandbox.
+	logger, err := NewLogger(DefaultLoggerSettings("logger-test", app.Sandbox().LogsDir()))
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	app.logger = logger
+
+	// 1. Logger() returns non-nil.
+	if app.Logger() == nil {
+		t.Fatal("Logger() returned nil")
+	}
+
+	// 2. WithField + Info writes to sandbox logs dir.
+	app.Logger().WithField("key", 123).Info("hello")
+	app.Logger().Close()
+
+	entries, err := os.ReadDir(app.Sandbox().LogsDir())
+	if err != nil {
+		t.Fatalf("ReadDir logs: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected log file in sandbox logs dir, got 0")
+	}
+
+	data, err := os.ReadFile(filepath.Join(app.Sandbox().LogsDir(), entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile log: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "hello") {
+		t.Errorf("log file should contain 'hello', got: %q", content)
+	}
+	if !strings.Contains(content, "key=123") {
+		t.Errorf("log file should contain 'key=123', got: %q", content)
+	}
+
+	// 3. newTestApp properly resets logger — each call gets a fresh instance.
+	app2, _ := newTestApp("logger-test-2", "1.0")
+	if app2.Logger() == nil {
+		t.Fatal("newTestApp Logger() returned nil")
+	}
+	if app2.Logger() == app.Logger() {
+		t.Error("newTestApp should produce a fresh logger, not reuse previous")
+	}
+}
+
 func TestExecutePanicWritesCrashDump(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.Setenv("PANIC_DUMP_TEST_HOME", tmpDir)

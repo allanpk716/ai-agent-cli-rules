@@ -235,9 +235,10 @@ class TestCreateBackupDataDirNotExist:
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
+        nonexistent = str(tmp_path / "does_not_exist" / "nested")
         with pytest.raises(OSError, match="backup:"):
             CreateBackup(
-                "/nonexistent/path/that/does/not/exist",
+                nonexistent,
                 str(output_dir), "testapp", ["f.txt"],
             )
 
@@ -339,8 +340,9 @@ class TestListBackupsEmpty:
 class TestListBackupsNonexistentDir:
     """Nonexistent directory returns non-None empty list."""
 
-    def test_nonexistent_dir(self):
-        metas = ListBackups("/nonexistent/path", "testapp")
+    def test_nonexistent_dir(self, tmp_path: Path):
+        nonexistent = str(tmp_path / "does_not_exist" / "nested")
+        metas = ListBackups(nonexistent, "testapp")
         assert metas == []
 
 
@@ -697,8 +699,9 @@ class TestGfsOutputDirNotExist:
         timestamps = [datetime(2025, 1, 15, 10, 0, 0)]
         backups = _create_fake_backup_files(str(tmp_path), "app", timestamps)
 
+        nonexistent = str(tmp_path / "does_not_exist" / "nested")
         with pytest.raises(OSError, match="backup:"):
-            GFSRotate(backups, RetentionPolicy(daily=1), "/nonexistent/path")
+            GFSRotate(backups, RetentionPolicy(daily=1), nonexistent)
 
 
 class TestGfsOutputDirIsFile:
@@ -769,8 +772,9 @@ class TestBackupConfigDefaults:
 class TestBackupConfigLoadNonexistent:
     """Load nonexistent file returns defaults."""
 
-    def test_load_nonexistent_file(self):
-        cfg = LoadBackupConfig("/nonexistent/path/backup-config.json")
+    def test_load_nonexistent_file(self, tmp_path: Path):
+        nonexistent = str(tmp_path / "does_not_exist" / "backup-config.json")
+        cfg = LoadBackupConfig(nonexistent)
         expected = DefaultBackupConfig()
         assert cfg.retention_policy.daily == expected.retention_policy.daily
         assert cfg.retention_policy.weekly == expected.retention_policy.weekly

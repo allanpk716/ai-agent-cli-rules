@@ -49,6 +49,14 @@ from agentsdk.backup import (
     SaveBackupConfig,
 )
 
+# S03 — Logger
+from agentsdk.logger import (
+    Logger,
+    LoggerSettings,
+    WithFieldFormatter,
+    default_logger_settings,
+)
+
 __all__ = [
     # S01
     "ENVELOPE_VERSION",
@@ -94,4 +102,9 @@ __all__ = [
     "DefaultBackupConfig",
     "LoadBackupConfig",
     "SaveBackupConfig",
+    # S03 — Logger
+    "Logger",
+    "LoggerSettings",
+    "WithFieldFormatter",
+    "default_logger_settings",
 ]

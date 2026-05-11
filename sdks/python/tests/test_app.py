@@ -21,6 +21,7 @@ from agentsdk.exitcode import (
     ExitError,
 )
 from agentsdk.flightcontext import FlightContext
+from agentsdk.logger import Logger
 from agentsdk.sandbox import Sandbox
 from agentsdk.writer import Writer
 
@@ -124,6 +125,7 @@ class TestAppInit:
             with patch.dict(os.environ, env, clear=False):
                 app = App("x", "1.0")
                 assert app._trace_id == ""
+                app.logger.close()
 
 
 # ========================================================================
@@ -359,6 +361,7 @@ class TestRunPanicRecovery:
                 assert dump_data["crash_type"] == "panic"
                 assert "boom" in dump_data["panic_value"]
                 assert "RuntimeError" in dump_data["stack_trace"]
+                app.logger.close()
 
     def test_crash_dump_includes_flight_context(self):
         cli = typer.Typer()
@@ -383,6 +386,7 @@ class TestRunPanicRecovery:
                 )
                 assert dump_data["flight_context"]["current_step"] == "deploying"
                 assert dump_data["flight_context"]["target"] == "prod"
+                app.logger.close()
 
     def test_stdout_restored_after_panic_dedicated(self):
         """sys.stdout must be restored even after a panic (no _run_capture)."""
@@ -421,6 +425,7 @@ class TestRunPanicRecovery:
                     list(crash_dir.glob("crash-*.json"))[0].read_text()
                 )
                 assert dump_data["trace_id"] == "trace-abc-123"
+                app.logger.close()
 
     def test_jsonl_envelope_has_trace_id(self):
         cli = typer.Typer()
@@ -832,3 +837,65 @@ class TestOnHelp:
 
         app.reset_for_testing()
         assert app._on_help_callback is my_callback
+
+
+# ========================================================================
+# App.logger — Logger integration
+# ========================================================================
+
+
+class TestAppLogger:
+    def test_logger_is_logger_instance(self):
+        """app.logger should be a Logger instance."""
+        app = App("test-app", "1.0.0")
+        assert isinstance(app.logger, Logger)
+
+    def test_logger_writes_to_sandbox_logs_dir(self, tmp_path):
+        """app.logger should write log files to the sandbox logs directory."""
+        with patch.dict(os.environ, {"TEST_APP_HOME": str(tmp_path)}):
+            app = App("test-app", "1.0.0")
+            app.logger.info("hello from app logger")
+            app.logger.close()
+
+            logs_dir = Path(tmp_path) / "logs"
+            assert logs_dir.exists()
+            log_files = list(logs_dir.glob("*.log"))
+            assert len(log_files) >= 1
+            content = log_files[0].read_text(encoding="utf-8")
+            assert "hello from app logger" in content
+
+    def test_logger_with_field(self, tmp_path):
+        """app.logger.with_field should produce structured log output."""
+        with patch.dict(os.environ, {"TEST_APP_HOME": str(tmp_path)}):
+            app = App("test-app", "1.0.0")
+            app.logger.with_field("key", 123).info("hello")
+            app.logger.close()
+
+            logs_dir = Path(tmp_path) / "logs"
+            log_files = list(logs_dir.glob("*.log"))
+            assert len(log_files) >= 1
+            content = log_files[0].read_text(encoding="utf-8")
+            assert "key=123" in content
+            assert "hello" in content
+
+    def test_reset_for_testing_resets_logger(self, tmp_path):
+        """reset_for_testing should close the old logger and create a new one."""
+        with patch.dict(os.environ, {"TEST_APP_HOME": str(tmp_path)}):
+            app = App("test-app", "1.0.0")
+            original_logger = app.logger
+            app.logger.info("before reset")
+            app.reset_for_testing()
+
+            # Logger should be a different instance after reset.
+            assert app.logger is not original_logger
+            assert isinstance(app.logger, Logger)
+
+            # New logger should still be functional.
+            app.logger.info("after reset")
+            app.logger.close()
+
+            logs_dir = Path(tmp_path) / "logs"
+            log_files = list(logs_dir.glob("*.log"))
+            assert len(log_files) >= 1
+            content = log_files[0].read_text(encoding="utf-8")
+            assert "after reset" in content

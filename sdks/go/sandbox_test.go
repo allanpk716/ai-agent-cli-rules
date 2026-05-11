@@ -55,6 +55,7 @@ func TestSandboxSubdirPaths(t *testing.T) {
 		"cache":       filepath.Join(s.BaseDir(), "cache"),
 		"locks":       filepath.Join(s.BaseDir(), "locks"),
 		"crash_dumps": filepath.Join(s.BaseDir(), "crash_dumps"),
+		"logs":        filepath.Join(s.BaseDir(), "logs"),
 	}
 
 	// Test individual accessors.
@@ -70,6 +71,9 @@ func TestSandboxSubdirPaths(t *testing.T) {
 	if s.CrashDumpsDir() != expectedSubdirs["crash_dumps"] {
 		t.Errorf("CrashDumpsDir() = %q, want %q", s.CrashDumpsDir(), expectedSubdirs["crash_dumps"])
 	}
+	if s.LogsDir() != expectedSubdirs["logs"] {
+		t.Errorf("LogsDir() = %q, want %q", s.LogsDir(), expectedSubdirs["logs"])
+	}
 }
 
 func TestSandboxDirs(t *testing.T) {
@@ -78,7 +82,7 @@ func TestSandboxDirs(t *testing.T) {
 	s := NewSandbox("test-tool")
 	dirs := s.Dirs()
 
-	expectedKeys := []string{"data", "cache", "locks", "crash_dumps"}
+	expectedKeys := []string{"cache", "crash_dumps", "data", "locks", "logs"}
 	var keys []string
 	for k := range dirs {
 		keys = append(keys, k)
@@ -168,7 +172,7 @@ func TestSandboxEnsureError(t *testing.T) {
 	s := &Sandbox{
 		appName: "error-test",
 		baseDir: filepath.Join(fileAsDir, "subdir"),
-		subdirs: []string{SubdirData, SubdirCache, SubdirLocks, SubdirCrashDumps},
+		subdirs: []string{SubdirData, SubdirCache, SubdirLocks, SubdirCrashDumps, SubdirLogs},
 	}
 
 	err := s.Ensure()

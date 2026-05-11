@@ -26,13 +26,14 @@ const (
 	SubdirCache      = "cache"
 	SubdirLocks      = "locks"
 	SubdirCrashDumps = "crash_dumps"
+	SubdirLogs       = "logs"
 )
 
 // NewSandboxWithBaseDir creates a Sandbox with an explicit base directory,
 // bypassing env/home resolution. This is intended for testing scenarios
 // where callers need full control over the sandbox location.
 func NewSandboxWithBaseDir(appName, baseDir string) *Sandbox {
-	subdirs := []string{SubdirData, SubdirCache, SubdirLocks, SubdirCrashDumps}
+	subdirs := []string{SubdirData, SubdirCache, SubdirLocks, SubdirCrashDumps, SubdirLogs}
 	return &Sandbox{
 		appName: appName,
 		baseDir: baseDir,
@@ -45,7 +46,7 @@ func NewSandboxWithBaseDir(appName, baseDir string) *Sandbox {
 //  1. The environment variable <APP_NAME>_HOME (uppercased, hyphens→underscores)
 //  2. Falling back to ~/.<app-name>/ using os.UserHomeDir()
 func NewSandbox(appName string) *Sandbox {
-	subdirs := []string{SubdirData, SubdirCache, SubdirLocks, SubdirCrashDumps}
+	subdirs := []string{SubdirData, SubdirCache, SubdirLocks, SubdirCrashDumps, SubdirLogs}
 
 	envVar := strings.ToUpper(strings.ReplaceAll(appName, "-", "_")) + "_HOME"
 	if dir := os.Getenv(envVar); dir != "" {
@@ -106,6 +107,11 @@ func (s *Sandbox) CrashDumpsDir() string {
 	return filepath.Join(s.baseDir, SubdirCrashDumps)
 }
 
+// LogsDir returns the logs subdirectory path.
+func (s *Sandbox) LogsDir() string {
+	return filepath.Join(s.baseDir, SubdirLogs)
+}
+
 // Dirs returns a map of subdirectory names to their full paths.
 // Useful for agent doctor checks and diagnostic tooling.
 func (s *Sandbox) Dirs() map[string]string {
@@ -114,5 +120,6 @@ func (s *Sandbox) Dirs() map[string]string {
 		SubdirCache:      s.CacheDir(),
 		SubdirLocks:      s.LocksDir(),
 		SubdirCrashDumps: s.CrashDumpsDir(),
+		SubdirLogs:       s.LogsDir(),
 	}
 }

@@ -78,7 +78,7 @@ def _first_envelope(output: str) -> dict:
 
 def _make_sandbox_dirs(base: Path) -> None:
     """Create standard sandbox subdirectories."""
-    for subdir in ("data", "cache", "locks", "crash_dumps"):
+    for subdir in ("data", "cache", "locks", "crash_dumps", "logs"):
         (base / subdir).mkdir(parents=True, exist_ok=True)
 
 
@@ -547,6 +547,7 @@ class TestDoctorIntegration:
         assert "sandbox_cache" in check_names
         assert "sandbox_locks" in check_names
         assert "sandbox_crash_dumps" in check_names
+        assert "sandbox_logs" in check_names
 
         # Config check
         assert "config_file" in check_names

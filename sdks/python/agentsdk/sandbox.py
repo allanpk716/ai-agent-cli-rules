@@ -20,8 +20,9 @@ SUBDIR_DATA = "data"
 SUBDIR_CACHE = "cache"
 SUBDIR_LOCKS = "locks"
 SUBDIR_CRASH_DUMPS = "crash_dumps"
+SUBDIR_LOGS = "logs"
 
-_STANDARD_SUBDIRS = [SUBDIR_DATA, SUBDIR_CACHE, SUBDIR_LOCKS, SUBDIR_CRASH_DUMPS]
+_STANDARD_SUBDIRS = [SUBDIR_DATA, SUBDIR_CACHE, SUBDIR_LOCKS, SUBDIR_CRASH_DUMPS, SUBDIR_LOGS]
 
 
 class Sandbox:
@@ -65,6 +66,11 @@ class Sandbox:
     def crash_dumps_dir(self) -> str:
         """Return the crash_dumps subdirectory path."""
         return str(Path(self._base_dir) / SUBDIR_CRASH_DUMPS)
+
+    @property
+    def logs_dir(self) -> str:
+        """Return the logs subdirectory path."""
+        return str(Path(self._base_dir) / SUBDIR_LOGS)
 
     def dirs(self) -> Dict[str, str]:
         """Return a map of subdirectory names to their full paths.

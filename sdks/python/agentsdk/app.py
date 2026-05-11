@@ -29,6 +29,7 @@ from agentsdk.exitcode import (
     ExitError,
 )
 from agentsdk.flightcontext import FlightContext
+from agentsdk.logger import Logger, default_logger_settings
 from agentsdk.sandbox import Sandbox
 from agentsdk.signalhandler import SignalHandlerConfig, setup_signal_handler
 from agentsdk.writer import Writer
@@ -96,6 +97,9 @@ class App:
         self._sandbox = Sandbox(name)
         self._flight_context = FlightContext()
 
+        # Logger — initialized with default settings targeting sandbox logs dir.
+        self._logger = Logger(default_logger_settings(name, self._sandbox.logs_dir))
+
         # Agent command registration maps.
         self._config_providers: Dict[str, Any] = {}
         self._health_checks: Dict[str, Callable[..., Any]] = {}
@@ -140,6 +144,11 @@ class App:
     def flight_context(self) -> FlightContext:
         """FlightContext for in-flight state recording."""
         return self._flight_context
+
+    @property
+    def logger(self) -> Logger:
+        """Structured Logger instance targeting the sandbox logs directory."""
+        return self._logger
 
     @property
     def captured_output(self) -> str:
@@ -192,6 +201,12 @@ class App:
         self._writer = Writer(io.StringIO(), tool_name=self._name)
         self._flight_context.clear()
         self._fake_stream = None
+
+        # Close old logger and create a fresh one.
+        self._logger.close()
+        self._logger = Logger(
+            default_logger_settings(self._name, self._sandbox.logs_dir)
+        )
 
     # ------------------------------------------------------------------
     # Register methods

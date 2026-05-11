@@ -443,8 +443,8 @@ class TestDoctorCommand:
 
     def test_doctor_passes_with_dirs(self, app: App, writer_buf: io.StringIO, tmp_dir: Path) -> None:
         """Doctor reports pass when sandbox dirs exist."""
-        # Create sandbox dirs.
-        for subdir in ["data", "cache", "locks", "crash_dumps"]:
+        # Create sandbox dirs (including logs — added for Logger support).
+        for subdir in ["data", "cache", "locks", "crash_dumps", "logs"]:
             (tmp_dir / subdir).mkdir(parents=True, exist_ok=True)
 
         agent_typer = create_agent_app(app)

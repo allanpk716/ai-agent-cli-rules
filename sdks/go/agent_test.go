@@ -1158,11 +1158,19 @@ func TestAgentDoctorSandboxMissing(t *testing.T) {
 	checks := dataMap["checks"].([]interface{})
 
 	// All sandbox checks should show fail since dirs don't exist.
+	// Exception: sandbox_logs is always created by New() via Logger initialization.
 	for _, c := range checks {
 		check := c.(map[string]interface{})
 		name := check["name"].(string)
 		if strings.HasPrefix(name, "sandbox_") {
 			status := check["status"].(string)
+			if name == "sandbox_logs" {
+				// Logs dir is created by New() via Logger initialization.
+				if status != "pass" {
+					t.Errorf("check %q status = %q, want %q (created by Logger in New())", name, status, "pass")
+				}
+				continue
+			}
 			if status != "fail" {
 				t.Errorf("check %q status = %q, want %q (dir not created)", name, status, "fail")
 			}

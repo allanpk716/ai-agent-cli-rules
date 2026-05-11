@@ -314,7 +314,8 @@ func TestCreateBackup_createsOutputDir(t *testing.T) {
 func TestCreateBackup_dataDirNotExist(t *testing.T) {
 	outputDir := t.TempDir()
 
-	_, _, err := CreateBackup("/nonexistent/path/that/does/not/exist", outputDir, "testapp", []string{"f.txt"})
+	nonexistent := filepath.Join(t.TempDir(), "does_not_exist", "nested")
+	_, _, err := CreateBackup(nonexistent, outputDir, "testapp", []string{"f.txt"})
 	if err == nil {
 		t.Fatal("expected error for non-existent dataDir")
 	}
@@ -484,7 +485,8 @@ func TestListBackups_empty(t *testing.T) {
 }
 
 func TestListBackups_nonexistentDir(t *testing.T) {
-	metas, err := ListBackups("/nonexistent/path", "testapp")
+	nonexistent := filepath.Join(t.TempDir(), "does_not_exist", "nested")
+	metas, err := ListBackups(nonexistent, "testapp")
 	if err != nil {
 		t.Fatalf("ListBackups failed: %v", err)
 	}
@@ -747,8 +749,9 @@ func TestCreateBackup_walkError(t *testing.T) {
 
 // Verify that the error wrapping preserves the causal chain.
 func TestCreateBackup_errorWrapping(t *testing.T) {
-	// Non-existent data dir.
-	_, _, err := CreateBackup("/nonexistent/path", t.TempDir(), "app", []string{"f.txt"})
+	// Non-existent data dir — use a path guaranteed not to exist.
+	nonexistent := filepath.Join(t.TempDir(), "does_not_exist", "nested")
+	_, _, err := CreateBackup(nonexistent, t.TempDir(), "app", []string{"f.txt"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1148,7 +1151,8 @@ func TestGFS_outputDirNotExist(t *testing.T) {
 	}
 	backups := createFakeBackupFiles(t, t.TempDir(), "app", timestamps)
 
-	_, err := GFSRotate(backups, RetentionPolicy{Daily: 1}, "/nonexistent/path")
+	nonexistent := filepath.Join(t.TempDir(), "does_not_exist", "nested")
+	_, err := GFSRotate(backups, RetentionPolicy{Daily: 1}, nonexistent)
 	if err == nil {
 		t.Fatal("expected error for non-existent outputDir")
 	}
@@ -1243,7 +1247,8 @@ func TestBackupConfig_DefaultValues(t *testing.T) {
 }
 
 func TestBackupConfig_LoadNonexistentFile(t *testing.T) {
-	cfg, err := LoadBackupConfig("/nonexistent/path/backup-config.json")
+	nonexistent := filepath.Join(t.TempDir(), "does_not_exist", "backup-config.json")
+	cfg, err := LoadBackupConfig(nonexistent)
 	if err != nil {
 		t.Fatalf("LoadBackupConfig should return nil error for nonexistent file, got: %v", err)
 	}

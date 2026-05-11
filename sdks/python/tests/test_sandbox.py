@@ -15,6 +15,7 @@ from agentsdk.sandbox import (
     SUBDIR_CRASH_DUMPS,
     SUBDIR_DATA,
     SUBDIR_LOCKS,
+    SUBDIR_LOGS,
     Sandbox,
 )
 
@@ -91,6 +92,10 @@ class TestSandboxSubdirPaths:
         sb = Sandbox("test-tool")
         assert sb.crash_dumps_dir == str(Path(sb.base_dir) / "crash_dumps")
 
+    def test_logs_dir(self):
+        sb = Sandbox("test-tool")
+        assert sb.logs_dir == str(Path(sb.base_dir) / "logs")
+
 
 # ---------------------------------------------------------------------------
 # Dirs() map
@@ -100,7 +105,7 @@ class TestSandboxDirs:
     def test_dirs_returns_all_four_subdirs(self):
         sb = Sandbox("test-tool")
         dirs = sb.dirs()
-        assert set(dirs.keys()) == {"data", "cache", "locks", "crash_dumps"}
+        assert set(dirs.keys()) == {"data", "cache", "locks", "crash_dumps", "logs"}
 
     def test_dirs_values_are_correct_paths(self):
         sb = Sandbox("test-tool")
@@ -145,7 +150,7 @@ class TestSandboxEnsure:
         sb = Sandbox.__new__(Sandbox)
         sb._app_name = "error-test"
         sb._base_dir = str(blocking_file / "subdir")
-        sb._subdirs = [SUBDIR_DATA, SUBDIR_CACHE, SUBDIR_LOCKS, SUBDIR_CRASH_DUMPS]
+        sb._subdirs = [SUBDIR_DATA, SUBDIR_CACHE, SUBDIR_LOCKS, SUBDIR_CRASH_DUMPS, SUBDIR_LOGS]
 
         with pytest.raises(OSError):
             sb.ensure()

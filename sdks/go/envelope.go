@@ -44,13 +44,6 @@ func NewResultEnvelope(tool string, data interface{}, kind ...string) Envelope {
 		Data:      data,
 		Kind:      k,
 	}
-	return Envelope{
-		Version:   EnvelopeVersion,
-		Tool:      tool,
-		Type:      TypeResult,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Data:      data,
-	}
 }
 
 // NewErrorEnvelope creates an error envelope with error_code and message only.
