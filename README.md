@@ -187,6 +187,114 @@ $ python main.py agent schema
 | `warning` | `message` (必填) | `data`, `error_code`, `percent` |
 | `progress` | `percent` (必填) | `data`, `error_code` |
 
+## 备份与还原
+
+SDK 提供了完整的备份与还原能力，支持将沙箱目录打包为 zip 归档，以及从归档中恢复文件。还原操作默认会**覆盖**目标目录中的同名文件，请务必遵循「先备份再还原」原则。
+
+> ⚠️ **先备份再还原**：`RestoreBackup` 会直接覆盖 `targetDir` 中已存在的同名文件。在执行还原之前，务必先对当前状态调用 `CreateBackup` 创建备份，以便在还原结果不符合预期时回退。
+
+### API 说明
+
+#### Go
+
+```go
+// RestoreResult 还原操作的结果
+type RestoreResult struct {
+    Restored []string // 成功还原的文件路径（相对于 targetDir）
+    Skipped  []string // 被跳过的 zip 条目路径（如不在 items 过滤列表中）
+}
+
+// RestoreBackup 从 zip 归档还原文件到 targetDir
+//   - zipPath:    zip 归档路径
+//   - targetDir:  还原目标目录（不存在则自动创建）
+//   - items:      可选条目过滤列表。nil 或空表示全量还原；
+//                 非空时仅还原精确匹配或目录前缀匹配的条目
+func RestoreBackup(zipPath, targetDir string, items []string) (RestoreResult, error)
+```
+
+#### Python
+
+```python
+@dataclass
+class RestoreResult:
+    restored: List[str]  # 成功还原的文件路径（相对于 target_dir）
+    skipped: List[str]   # 被跳过的 zip 条目路径
+
+def RestoreBackup(
+    zip_path: str,
+    target_dir: str,
+    items: Optional[List[str]] = None,
+) -> RestoreResult: ...
+```
+
+### 使用示例
+
+#### Go — 全量还原
+
+```go
+result, err := agentsdk.RestoreBackup("/backups/config-v2.zip", app.Sandbox().DataDir(), nil)
+if err != nil {
+    app.JSONL().Error("RESTORE_FAILED", fmt.Sprintf("还原失败: %v", err))
+    return err
+}
+fmt.Printf("还原了 %d 个文件，跳过 %d 个\n", len(result.Restored), len(result.Skipped))
+```
+
+#### Go — 选择性还原
+
+```go
+// 仅还原 config.json 和 data/ 目录下的文件
+result, err := agentsdk.RestoreBackup("/backups/config-v2.zip", app.Sandbox().DataDir(), []string{
+    "config.json",
+    "data/",
+})
+if err != nil {
+    // 错误处理...
+}
+```
+
+#### Python — 全量还原
+
+```python
+result = RestoreBackup("/backups/config-v2.zip", app.sandbox.data_dir)
+# result.restored -> ["config.json", "data/file1.txt", ...]
+# result.skipped  -> []
+```
+
+#### Python — 选择性还原
+
+```python
+# 仅还原 config.json 和 data/ 目录下的文件
+result = RestoreBackup(
+    "/backups/config-v2.zip",
+    app.sandbox.data_dir,
+    items=["config.json", "data/"],
+)
+```
+
+### `items` 参数用法
+
+`items` 参数控制还原的范围：
+
+| 值 | 行为 |
+|---|---|
+| `nil`（Go）/ `None`（Python） | **全量还原**：还原归档中的所有条目 |
+| `[]`（空列表） | 同上，视为全量还原 |
+| `["config.json"]` | **选择性还原**：仅还原精确匹配 `config.json` 的条目 |
+| `["data/"]` | **选择性还原**：还原 `data/` 目录下的所有文件（目录前缀匹配） |
+| `["config.json", "data/"]` | **选择性还原**：同时使用精确匹配和前缀匹配 |
+
+匹配规则：
+- **精确匹配**：条目名称与 items 中的某项完全一致（如 `"config.json"`）
+- **目录前缀匹配**：items 中的某项作为目录前缀，匹配所有以此开头的条目（如 `"data/"` 匹配 `"data/file.txt"`、`"data/sub/nested.txt"`）
+
+### 错误处理
+
+- **首错即停**：还原过程中遇到第一个错误立即中止，已还原的文件不会回滚
+- **错误前缀**：所有错误信息以 `restore:` 前缀开头，便于日志过滤和诊断
+- **zip-slip 防护**：自动检测路径穿越攻击，拒绝还原到目标目录之外的路径
+- **CRC-32 校验**：解压时自动验证文件完整性，损坏的归档会报错
+
 ## 项目结构
 
 ```
@@ -202,6 +310,8 @@ $ python main.py agent schema
 │   │   ├── flightcontext.go   # 飞行记录器（黑匣子）
 │   │   ├── signalhandler.go   # 信号处理
 │   │   ├── exitcode.go        # 错误码注册表
+│   │   ├── backup.go          # CreateBackup — 目录打包为 zip 归档
+│   │   ├── restore.go         # RestoreBackup — 从 zip 归档还原文件
 │   │   └── ..._test.go        # 每个模块对应测试
 │   └── python/                # Python SDK (Typer-based)
 │       └── agentsdk/
@@ -210,6 +320,8 @@ $ python main.py agent schema
 │           ├── writer.py      # JSONL 输出 Writer
 │           ├── config.py      # ConfigManager (Pydantic)
 │           ├── sandbox.py     # 跨平台目录管理
+│           ├── backup.py      # CreateBackup — 目录打包为 zip 归档
+│           ├── restore.py     # RestoreBackup — 从 zip 归档还原文件
 │           └── ...
 ├── examples/
 │   ├── go/helloworld/         # Go 完整示例

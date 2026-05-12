@@ -35,6 +35,12 @@ from agentsdk.health import HealthCheckStatus, HealthCheckResult, HealthCheckFun
 from agentsdk.command_meta import CommandMeta
 from agentsdk.agent_commands import create_agent_app
 
+# S03 — Restore module
+from agentsdk.restore import (
+    RestoreBackup,
+    RestoreResult,
+)
+
 # S03 — Backup module
 from agentsdk.backup import (
     BackupConfig,
@@ -91,6 +97,9 @@ __all__ = [
     "HealthCheckFunc",
     "CommandMeta",
     "create_agent_app",
+    # S03 — Restore
+    "RestoreBackup",
+    "RestoreResult",
     # S03 — Backup
     "BackupMeta",
     "CreateBackup",
